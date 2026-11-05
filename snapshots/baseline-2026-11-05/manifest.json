@@ -1,0 +1,31 @@
+{
+  "name": "TDK factory map locked baseline",
+  "capturedAt": "2026-11-05",
+  "origin": "http://127.0.0.1:5502/index.html",
+  "revision": 12,
+  "layout": {
+    "objects": 671,
+    "added": 52,
+    "deleted": 465,
+    "cuts": 1,
+    "file": "layout.json",
+    "bytes": 313860,
+    "sha256": "263c223a07fdfa1c88ba80aed1d1e3c3dbbe9f181a1e5a89c9a8526c535fd004"
+  },
+  "export": {
+    "file": "../../exports/tdk-factory-map-baseline-2026-11-05.js",
+    "bytes": 1557760,
+    "sha256": "e4cbdbc26c9e8cca4ef9240de017acb660d522e18a7773f43e880acb7a006d8c"
+  },
+  "sourceArchive": {
+    "file": "tdk-map-source-baseline-2026-11-05.zip",
+    "bytes": 3393198,
+    "sha256": "7db473e956b1dc1d61197c7b7847dda7c639806ae4478205e80e84e65311d921"
+  },
+  "sourceHashes": {
+    "index.html": "8be606ebf3054c1104fa8eab2333acbaf8b98ce7ed80d4ace9760c23b3bb24c0",
+    "src/main.js": "60bbf0b0fb54fc9fdd87bab0387158280a31098d62f830909a1189011c8ed08d",
+    "src/factory-data.js": "027f27486a91eea331a1f35a8b3b3069790196c3c464add882e6ac9310805353",
+    "tdk-factory-map.js": "d47bbee58014237be2bc2a410eced48519d74e773a399c791f1eef97b23c8392"
+  }
+}

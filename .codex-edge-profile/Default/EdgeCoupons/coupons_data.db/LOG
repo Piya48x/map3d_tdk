@@ -1,0 +1,5 @@
+2026/10/28-08:07:08.180 fcc Creating DB H:\project_code\3d_map_tdk\v7\.codex-edge-profile\Default\EdgeCoupons/coupons_data.db since it was missing.
+2026/10/28-08:07:08.227 fcc Reusing MANIFEST H:\project_code\3d_map_tdk\v7\.codex-edge-profile\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
+2026/10/28-08:07:12.914 3b78 Level-0 table #5: started
+2026/10/28-08:07:12.920 3b78 Level-0 table #5: 683273 bytes OK
+2026/10/28-08:07:12.923 3b78 Delete type=0 #3

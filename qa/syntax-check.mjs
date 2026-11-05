@@ -1,0 +1,3559 @@
+
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { TransformControls } from 'three/addons/controls/TransformControls.js';
+        import { SITE, GAME_CONFIG } from './src/app-config.js';
+        import { GAME_MOVEMENT_CODES, getMovementInput, movementDelta, clamp } from './src/game-controls.js';
+
+        const loading = document.getElementById('loading');
+
+        try {
+
+            // ------------------------------------------------------------
+            // Scene and renderer
+            // ------------------------------------------------------------
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color('#f4f8fa');
+            scene.fog = new THREE.Fog('#f4f8fa', 255, 610);
+
+            const perspectiveCamera = new THREE.PerspectiveCamera(
+                40, innerWidth / innerHeight, 0.3, 1200
+            );
+            perspectiveCamera.position.set(80, 118, 205);
+            const topCamera = new THREE.OrthographicCamera(-92, 92, 92, -92, .3, 700);
+            const initialTopHalfHeight = 92;
+            const initialTopHalfWidth = initialTopHalfHeight * innerWidth / innerHeight;
+            topCamera.left = -initialTopHalfWidth;
+            topCamera.right = initialTopHalfWidth;
+            topCamera.position.set(0, 245, 0);
+            topCamera.up.set(0, 0, -1);
+            topCamera.lookAt(0, 0, -5);
+            let camera = perspectiveCamera;
+
+            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(innerWidth, innerHeight);
+            // Keep enough detail for the corrugated roofs without asking an integrated
+            // GPU to render almost 4x as many pixels on a high-DPI display.
+            renderer.setPixelRatio(Math.min(devicePixelRatio, innerWidth < 700 ? 1.15 : 1.4));
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.outputColorSpace = THREE.SRGBColorSpace;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.15;
+            document.getElementById('viewport').appendChild(renderer.domElement);
+
+            const controls = new OrbitControls(camera, renderer.domElement);
+            controls.target.set(0, 3.2, -8);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.065;
+            controls.minDistance = 24;
+            controls.maxDistance = 330;
+            controls.maxPolarAngle = Math.PI / 2 - 0.025;
+            controls.autoRotateSpeed = 0.65;
+            controls.enableRotate = true;
+            controls.enablePan = true;
+
+            const toRender = value => value * SITE.renderUnitsPerSiteUnit;
+
+            // Google Maps Top View calibration.  Pixel footprints are retained so the
+            // X/Z layout is auditable against the 1064x857 reference image rather than
+            // being tuned independently by eye in the 3D scene.
+            const TOP_VIEW_GRID = Object.freeze({
+                source: '../v2/references/factory-satellite.png',
+                imageSize: { width: 1064, height: 857 },
+                axes: { x: 'left-to-right across campus', z: 'gate-to-rear', gateIsPositiveZ: true },
+                // Approximate roof extents traced from the supplied image; not survey measurements.
+                footprints: {
+                    doke1_west: {
+                        sourceCenterPx: [790, 215], sourceFootprintPx: [165, 400],
+                        position: { x: -32, z: -28 }, size: { width: 25, depth: 52 }
+                    },
+                    doke1_store: {
+                        sourceCenterPx: [695, 404], sourceFootprintPx: [164, 480],
+                        position: { x: -4, z: -23.5 }, size: { width: 24, depth: 59 }
+                    },
+                    doke2_assy: {
+                        sourceCenterPx: [631, 631], sourceFootprintPx: [214, 442],
+                        position: { x: 31, z: -22 }, size: { width: 32, depth: 56 }
+                    },
+                    rack_dome: {
+                        sourceCenterPx: [284, 553], sourceFootprintPx: [177, 190],
+                        position: { x: 31, z: 28 }, size: { width: 27, depth: 27 }
+                    },
+                    main_office: {
+                        sourceCenterPx: [301, 301], sourceFootprintPx: [85, 120],
+                        position: { x: -32, z: 30 }, size: { width: 18.5, depth: 14 }
+                    },
+                    canteen: {
+                        sourceCenterPx: [525, 153], sourceFootprintPx: [162, 171],
+                        position: { x: -32, z: 6.5 }, size: { width: 25, depth: 17 }
+                    }
+                }
+            });
+            const gridBuilding = (id, name, height, details) => {
+                const measured = TOP_VIEW_GRID.footprints[id];
+                return {
+                    id, name,
+                    position: { ...measured.position },
+                    size: { ...measured.size, height },
+                    gridMeasurement: {
+                        sourceCenterPx: [...measured.sourceCenterPx],
+                        sourceFootprintPx: [...measured.sourceFootprintPx]
+                    },
+                    ...details
+                };
+            };
+            const BUILDINGS = [
+                gridBuilding('doke1_west', 'Doke 1 — อาคารด้านซ้าย', 6.62, {
+                    rotationY: 0,
+                    roof: { type: 'barrel', axis: 'z', rise: 1.62, overhang: .58, skylight: 'vents' },
+                    facade: { type: 'quiet', sign: false, loadingDoors: 1, blueRatio: .34 },
+                    vent: false, confidence: 'high', evidence: ['factory-satellite', 'factory-aerial']
+                }),
+                gridBuilding('doke1_store', 'Doke 1 — อาคารกลาง / Store', 6.75, {
+                    rotationY: 0,
+                    roof: { type: 'barrel', axis: 'z', rise: 2.14, overhang: .58, skylight: 'sparse' },
+                    facade: { type: 'store', sign: true, loadingDoors: 1, blueRatio: .43 },
+                    vent: true, confidence: 'high', evidence: ['factory-satellite', 'factory-aerial', 'S__33005594']
+                }),
+                gridBuilding('doke2_assy', 'Doke 2 — Assy Hanon', 7.86, {
+                    rotationY: 0,
+                    roof: { type: 'barrel', axis: 'z', rise: 2.08, overhang: .58, skylight: 'vents' },
+                    facade: { type: 'louvered', sign: true, loadingDoors: 1, blueRatio: .62 },
+                    vent: false, confidence: 'high', evidence: ['factory-satellite', 'factory-aerial', 'S__33005597', 'S__33005598']
+                }),
+                gridBuilding('rack_dome', 'โดมเก็บแร็ค', 5.45, {
+                    rotationY: 0,
+                    roof: { type: 'barrel', axis: 'z', rise: 2.01, overhang: .58, skylight: 'centerBands' },
+                    facade: { type: 'rack', sign: false, loadingDoors: 0, blueRatio: .48 },
+                    vent: false, confidence: 'high', evidence: ['factory-satellite', 'factory-aerial', 'S__33005599']
+                }),
+                gridBuilding('main_office', 'Main Office', 5.45, {
+                    // The real entrance/sign facade faces the central yard (+X).
+                    // Rotate the long office wing so its depth runs along the site Z axis.
+                    rotationY: Math.PI / 2,
+                    roof: { type: 'flat-parapet', rise: 0, overhang: .32 }, facade: { type: 'office', sign: true },
+                    confidence: 'high', evidence: ['factory-aerial', 'S__33005585', 'S__33005593', 'S__33005601']
+                }),
+                gridBuilding('canteen', 'Canteen / DV FL 2 / DIE-SET FL 2', 5.19, {
+                    rotationY: 0,
+                    roof: { type: 'barrel-over-office', axis: 'x', rise: 1.17, overhang: .32 },
+                    facade: { type: 'canteen', sign: false }, confidence: 'high',
+                    evidence: ['factory-satellite', 'factory-aerial', 'factory-layout', 'S__33005590']
+                })
+            ];
+            const BUILDING_BY_ID = Object.fromEntries(BUILDINGS.map(item => [item.id, item]));
+
+            const CAMERA_PRESETS = {
+                reference: { position: [80, 118, 205], target: [-1, 3.2, -6], fov: 40 },
+                aerial: { position: [139, 165, 155], target: [0, 0, -6], fov: 43 },
+                gate: { position: [-44, 20, 126], target: [-21, 4, 42], fov: 48 },
+                office: { position: [-92, 25, 88], target: [-48, 4.5, 35], fov: 45 },
+                factory: { position: [-64, 19, 27], target: [2, 6, -31], fov: 49 },
+                top: { position: [0, 245, 0], target: [0, 0, -5], orthoHeight: 184 }
+            };
+            const ROADS = [
+                { id: 'entry', from: [-13.64, 51.3], to: [-12.99, 7.79], width: 8.44 },
+                { id: 'cross-yard', from: [-12.99, 10.8], to: [45, 10.8], width: 5.5 },
+                { id: 'east-service', from: [47.5, 10.8], to: [47.5, -50.65], width: 4 }
+            ];
+            const WALKWAYS = [
+                // The blue pedestrian spine comes up the entry road then crosses
+                // directly to the centred Main Office lobby.
+                { id: 'blue-entry', from: [-14.2, 48], to: [-14.2, 30], width: 2.18 },
+                { id: 'zebra-office', from: [-14.2, 30], to: [-25, 30], width: 2.35 }
+            ];
+            const PARKING_AREAS = [
+                // In the aerial reference the long roof sits in front-left of the
+                // Main Office, parallel with its frontage and clear of the lobby.
+                { id: 'front-carpark', x: -34, z: 45.5, width: 30, depth: 6.8, spaces: 12, bayAxis: 'x' }
+            ];
+            const FENCES = [
+                [-50, -56.5, -50, 50], [50, -56.5, 50, 50], [-50, -56.5, 50, -56.5],
+                [-50, 50, -19.48, 50], [-4.55, 50, 50, 50]
+            ];
+            const VEGETATION = {
+                officePalms: [[-40.26, 15.58, .44], [-39.61, 29.22, .44], [-24.03, 17.53, .44], [-24.03, 28.57, .44]],
+                entryPalms: [[-16.23, 12.99, .56], [-16.23, 18.18, .56], [-16.23, 23.38, .56], [-16.23, 28.57, .56], [-16.23, 33.77, .56], [-16.23, 38.96, .56], [-16.23, 44.16, .56]],
+                rearTreeSpacing: 4.55,
+                boundaryTreeSpacing: 5.19
+            };
+
+            // Exposed audit data uses the requested 100-unit site coordinate system.
+            const buildingBounds = item => {
+                const rotation = item.rotationY || 0;
+                const worldWidth = Math.abs(item.size.width * Math.cos(rotation)) +
+                    Math.abs(item.size.depth * Math.sin(rotation));
+                const worldDepth = Math.abs(item.size.width * Math.sin(rotation)) +
+                    Math.abs(item.size.depth * Math.cos(rotation));
+                return {
+                    minX: item.position.x - worldWidth / 2,
+                    maxX: item.position.x + worldWidth / 2,
+                    minZ: item.position.z - worldDepth / 2,
+                    maxZ: item.position.z + worldDepth / 2
+                };
+            };
+            const layoutWarnings = [];
+            for (let i = 0; i < BUILDINGS.length; i++) {
+                const a = buildingBounds(BUILDINGS[i]);
+                for (let j = i + 1; j < BUILDINGS.length; j++) {
+                    const b = buildingBounds(BUILDINGS[j]);
+                    const overlapX = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
+                    const overlapZ = Math.min(a.maxZ, b.maxZ) - Math.max(a.minZ, b.minZ);
+                    if (overlapX > .15 && overlapZ > .15) {
+                        layoutWarnings.push(`${BUILDINGS[i].id} overlaps ${BUILDINGS[j].id}`);
+                    }
+                }
+            }
+            window.TDK_LAYOUT = { SITE, TOP_VIEW_GRID, BUILDINGS, ROADS, WALKWAYS, PARKING_AREAS, FENCES, VEGETATION, CAMERA_PRESETS, layoutWarnings };
+            if (layoutWarnings.length) console.warn('TDK layout audit:', layoutWarnings);
+
+            const ambient = new THREE.HemisphereLight('#ffffff', '#87956d', 2.35);
+            scene.add(ambient);
+
+            const sun = new THREE.DirectionalLight('#fff5de', 3.1);
+            sun.position.set(-85, 145, 65);
+            sun.castShadow = true;
+            const shadowSize = 1024;
+            sun.shadow.mapSize.set(shadowSize, shadowSize);
+            Object.assign(sun.shadow.camera, {
+                left: -135, right: 135, top: 135, bottom: -135, near: 1, far: 380
+            });
+            sun.shadow.normalBias = 0.045;
+            sun.shadow.bias = -0.00015;
+            sun.shadow.radius = 3;
+            sun.target.position.set(0, 0, -5);
+            scene.add(sun, sun.target);
+
+            // Deterministic random values keep scenery consistent.
+            let seed = 62819;
+            function rand() {
+                seed = (seed * 1664525 + 1013904223) >>> 0;
+                return seed / 4294967296;
+            }
+
+            const material = (color, roughness = .8, metalness = 0) =>
+                new THREE.MeshStandardMaterial({ color, roughness, metalness });
+
+            const M = {
+                blue: material('#0961b6', .49, .32),
+                roof: material('#217dc5', .43, .4),
+                roofDark: material('#0752a0', .5, .32),
+                roofRib: material('#6aa0c7', .52, .3),
+                paleRoof: material('#c1ccd0', .7, .22),
+                wall: material('#ecece4'),
+                base: material('#b8bcb6'),
+                office: material('#f4f4ed'),
+                glass: new THREE.MeshStandardMaterial({
+                    color: '#234c60', roughness: .25, metalness: .48
+                }),
+                glassBlue: new THREE.MeshStandardMaterial({
+                    color: '#3a8cc2', roughness: .22, metalness: .42
+                }),
+                frame: material('#d8e4e8', .5, .35),
+                chrome: material('#d8e2e5', .16, .9),
+                dark: material('#25373c'),
+                asphalt: material('#737b7b'),
+                concrete: material('#bfc1b8'),
+                concreteLight: material('#d0d1ca'),
+                concreteDark: material('#9fa5a1'),
+                curb: material('#d7d8cb'),
+                white: material('#f5f4df'),
+                yellow: material('#f1cf4e'),
+                safety: material('#e7b92e'),
+                pathBlue: material('#2695cf'),
+                drain: material('#465258', .48, .58),
+                fence: material('#b2b9b5', .7, .5),
+                picketWhite: material('#f0f0e8', .7, .1),
+                wood: material('#8b5e3c', .75, .05),
+                woodDark: material('#6b3a1f', .72, .05),
+                woodRoof: material('#7a3b1a', .65, .08),
+                containerYellow: material('#e8c83a', .5, .15),
+                containerBlue: material('#3566a0', .45, .2),
+                blueBox: material('#1a5ea0', .4, .25),
+                flagRed: material('#c0392b', .5, .1),
+                flagWhite: material('#f5f5f5', .5, .1),
+                flagBlue: material('#1a3d7c', .5, .1),
+                trunk: material('#76634a'),
+                foliage: [
+                    material('#39733a'), material('#487d3b'),
+                    material('#588942'), material('#2e6636')
+                ],
+                skylight: new THREE.MeshStandardMaterial({
+                    color: '#f4fbff', roughness: .42, metalness: .05,
+                    transparent: true, opacity: .74, side: THREE.DoubleSide
+                }),
+                canopyGlass: new THREE.MeshStandardMaterial({
+                    color: '#69c8ef', roughness: .26, metalness: .12,
+                    transparent: true, opacity: .72, side: THREE.DoubleSide
+                }),
+                rubber: material('#22272a'),
+                red: material('#ad4543', .4, .3)
+            };
+
+            // Procedural concrete grain keeps the single-file build self-contained.
+            const concreteCanvas = document.createElement('canvas');
+            concreteCanvas.width = concreteCanvas.height = 256;
+            const concreteCtx = concreteCanvas.getContext('2d');
+            concreteCtx.fillStyle = '#d2d1ca';
+            concreteCtx.fillRect(0, 0, 256, 256);
+            for (let i = 0; i < 8500; i++) {
+                const shade = 148 + Math.floor(rand() * 72);
+                concreteCtx.fillStyle = `rgba(${shade},${shade},${shade - 4},${.035 + rand() * .07})`;
+                const size = .4 + rand() * 1.7;
+                concreteCtx.fillRect(rand() * 256, rand() * 256, size, size);
+            }
+            for (let i = 0; i < 22; i++) {
+                concreteCtx.strokeStyle = `rgba(75,78,76,${.025 + rand() * .035})`;
+                concreteCtx.lineWidth = .4 + rand() * .7;
+                concreteCtx.beginPath();
+                concreteCtx.moveTo(rand() * 256, rand() * 256);
+                concreteCtx.bezierCurveTo(rand() * 256, rand() * 256, rand() * 256, rand() * 256, rand() * 256, rand() * 256);
+                concreteCtx.stroke();
+            }
+            const concreteTexture = new THREE.CanvasTexture(concreteCanvas);
+            concreteTexture.colorSpace = THREE.SRGBColorSpace;
+            concreteTexture.wrapS = concreteTexture.wrapT = THREE.RepeatWrapping;
+            concreteTexture.repeat.set(18, 18);
+            [M.concrete, M.concreteLight, M.concreteDark].forEach(mat => {
+                mat.map = concreteTexture;
+                mat.needsUpdate = true;
+            });
+
+            // ------------------------------------------------------------
+            // Shared geometry helpers
+            // ------------------------------------------------------------
+            const unitBox = new THREE.BoxGeometry(1, 1, 1);
+            const meshesToPick = [];
+            const staticColliders = [];
+            const EDITOR_STORAGE_KEY = 'tdk-v7-object-layout-v1';
+            // Revision 7 resets built-in transforms saved against the old,
+            // misaligned factory footprints while preserving user-added objects.
+            const EDITOR_LAYOUT_REVISION = 7;
+            const editableObjects = new Map();
+            const builtinTemplates = new Map();
+            const deletedBuiltinObjects = new Set();
+            let editorSequence = 0;
+            let storedEditorLayout = { revision: EDITOR_LAYOUT_REVISION, objects: {}, added: [], deleted: [] };
+            try {
+                const previousLayout = JSON.parse(localStorage.getItem(EDITOR_STORAGE_KEY) || '{}');
+                if (previousLayout.revision === EDITOR_LAYOUT_REVISION) {
+                    storedEditorLayout = {
+                        revision: EDITOR_LAYOUT_REVISION,
+                        objects: {}, added: [], deleted: [],
+                        ...previousLayout
+                    };
+                } else {
+                    const added = Array.isArray(previousLayout.added) ? previousLayout.added : [];
+                    const customIds = new Set(added.map(item => typeof item === 'string' ? item : item.id));
+                    const objects = Object.fromEntries(Object.entries(previousLayout.objects || {})
+                        .filter(([id]) => customIds.has(id)));
+                    storedEditorLayout = { revision: EDITOR_LAYOUT_REVISION, objects, added, deleted: [] };
+                }
+                storedEditorLayout.deleted.forEach(id => deletedBuiltinObjects.add(id));
+            } catch (error) {
+                console.warn('อ่านตำแหน่งวัตถุที่บันทึกไว้ไม่สำเร็จ', error);
+            }
+            const labelGroup = new THREE.Group();
+            labelGroup.visible = false;
+            scene.add(labelGroup);
+
+            function registerCollider(x, z, w, d, padding = .7) {
+                staticColliders.push({
+                    minX: x - w / 2 - padding, maxX: x + w / 2 + padding,
+                    minZ: z - d / 2 - padding, maxZ: z + d / 2 + padding,
+                    cameraBox: new THREE.Box3(
+                        new THREE.Vector3(x - w / 2 - padding, 0, z - d / 2 - padding),
+                        new THREE.Vector3(x + w / 2 + padding, 19, z + d / 2 + padding)
+                    )
+                });
+            }
+
+            function box(parent, w, h, d, x, y, z, mat, shadow = true) {
+                const mesh = new THREE.Mesh(unitBox, mat);
+                mesh.scale.set(w, h, d);
+                mesh.position.set(x, y, z);
+                mesh.castShadow = shadow;
+                mesh.receiveShadow = true;
+                parent.add(mesh);
+                return mesh;
+            }
+
+            function cyl(parent, r1, r2, h, x, y, z, mat, segments = 10) {
+                const mesh = new THREE.Mesh(
+                    new THREE.CylinderGeometry(r1, r2, h, segments), mat
+                );
+                mesh.position.set(x, y, z);
+                mesh.castShadow = true;
+                mesh.receiveShadow = true;
+                parent.add(mesh);
+                return mesh;
+            }
+
+            function stripBetween(parent, x1, z1, x2, z2, width, y, mat, thickness = .045) {
+                const dx = x2 - x1;
+                const dz = z2 - z1;
+                const length = Math.hypot(dx, dz);
+                const mesh = box(parent, length, thickness, width,
+                    (x1 + x2) / 2, y, (z1 + z2) / 2, mat, false);
+                mesh.rotation.y = -Math.atan2(dz, dx);
+                return mesh;
+            }
+
+            function chevronWalkway(x1, z1, x2, z2, width = 3.2) {
+                const dx = x2 - x1;
+                const dz = z2 - z1;
+                const length = Math.hypot(dx, dz);
+                const group = new THREE.Group();
+                group.position.set((x1 + x2) / 2, .09, (z1 + z2) / 2);
+                group.rotation.y = -Math.atan2(dz, dx);
+                scene.add(group);
+                box(group, length, .065, width, 0, 0, 0, M.pathBlue, false);
+                for (let x = -length / 2 + 1.6; x < length / 2 - 1; x += 3.7) {
+                    const left = box(group, 1.85, .035, .28, x, .06, -.57, M.white, false);
+                    const right = box(group, 1.85, .035, .28, x, .06, .57, M.white, false);
+                    left.rotation.y = -.64;
+                    right.rotation.y = .64;
+                }
+                box(group, length, .045, .12, 0, .07, -width / 2 + .08, M.white, false);
+                box(group, length, .045, .12, 0, .07, width / 2 - .08, M.white, false);
+            }
+
+            function updateEditableBounds(group) {
+                group.updateWorldMatrix(true, true);
+                group.userData.editorBounds = new THREE.Box3().setFromObject(group).expandByScalar(.18);
+            }
+
+            function unregisterPickMeshes(group) {
+                group.traverse(obj => {
+                    if (!(obj.isMesh || obj.isLine || obj.isSprite)) return;
+                    let index = meshesToPick.indexOf(obj);
+                    while (index !== -1) {
+                        meshesToPick.splice(index, 1);
+                        index = meshesToPick.indexOf(obj);
+                    }
+                });
+            }
+
+            function registerEditable(group, { id, type, label, builtin = true, collidable = true, sourceId = null }) {
+                if (!group || !id) return group;
+                group.name = label || id;
+                group.userData.editor = {
+                    id, type, label: label || id, builtin, collidable, sourceId,
+                    baseY: group.position.y
+                };
+                if (builtin) builtinTemplates.set(id, group);
+                if (builtin && deletedBuiltinObjects.has(id)) {
+                    unregisterPickMeshes(group);
+                    group.removeFromParent();
+                    return group;
+                }
+                const saved = storedEditorLayout.objects?.[id];
+                if (saved) {
+                    group.position.set(saved.position.x, saved.position.y, saved.position.z);
+                    group.rotation.set(saved.rotation.x, saved.rotation.y, saved.rotation.z);
+                    group.scale.set(saved.scale.x, saved.scale.y, saved.scale.z);
+                    group.userData.editor.baseY = saved.position.y;
+                    if (saved.label) group.userData.editor.label = group.name = saved.label;
+                }
+                group.traverse(obj => {
+                    if (!(obj.isMesh || obj.isLine || obj.isSprite)) return;
+                    obj.userData.editRoot = group;
+                    obj.userData.info ||= {
+                        title: label || id,
+                        description: 'วัตถุที่สามารถย้าย หมุน ทำสำเนา หรือลบได้ในโหมดแก้ไข'
+                    };
+                    if (!meshesToPick.includes(obj)) meshesToPick.push(obj);
+                });
+                editableObjects.set(id, group);
+                updateEditableBounds(group);
+                return group;
+            }
+
+            function zebraWalkway(x1, z1, x2, z2, width = 3.1) {
+                const dx = x2 - x1;
+                const dz = z2 - z1;
+                const length = Math.hypot(dx, dz);
+                const group = new THREE.Group();
+                group.name = 'Pedestrian zebra walkway';
+                group.position.set((x1 + x2) / 2, .11, (z1 + z2) / 2);
+                group.rotation.y = -Math.atan2(dz, dx);
+                scene.add(group);
+                box(group, length, .035, width, 0, 0, 0, M.concreteDark, false);
+                for (let x = -length / 2 + .45; x < length / 2; x += 1.15) {
+                    box(group, .72, .032, width - .22, x, .035, 0, M.white, false);
+                }
+            }
+
+            function laneBollards(x1, z1, x2, z2, sideOffset = 2.15) {
+                const dx = x2 - x1;
+                const dz = z2 - z1;
+                const length = Math.hypot(dx, dz);
+                const ux = dx / length, uz = dz / length;
+                const nx = -uz, nz = ux;
+                for (let distance = 3; distance < length - 1; distance += 5.3) {
+                    const x = x1 + ux * distance + nx * sideOffset;
+                    const z = z1 + uz * distance + nz * sideOffset;
+                    cyl(scene, .13, .16, .95, x, .48, z, M.white, 12);
+                    cyl(scene, .135, .14, .25, x, .62, z, M.red, 12);
+                    cyl(scene, .135, .14, .18, x, .18, z, M.red, 12);
+                    cyl(scene, .31, .34, .08, x, .04, z, M.dark, 14);
+                }
+            }
+
+            function beam(parent, a, b, r, mat) {
+                const start = new THREE.Vector3(...a);
+                const end = new THREE.Vector3(...b);
+                const mesh = new THREE.Mesh(
+                    new THREE.CylinderGeometry(r, r, start.distanceTo(end), 6), mat
+                );
+                mesh.position.copy(start).add(end).multiplyScalar(.5);
+                mesh.quaternion.setFromUnitVectors(
+                    new THREE.Vector3(0, 1, 0), end.sub(start).normalize()
+                );
+                mesh.castShadow = true;
+                parent.add(mesh);
+                return mesh;
+            }
+
+            function textTexture(text, options = {}) {
+                const canvas = document.createElement('canvas');
+                canvas.width = 1024;
+                canvas.height = 160;
+                const ctx = canvas.getContext('2d');
+                if (options.background) {
+                    ctx.fillStyle = options.background;
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
+                ctx.fillStyle = options.color || '#ffffff';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.font = 'bold ' + (options.size || 66) + 'px Tahoma,Arial,sans-serif';
+                if (!options.background) {
+                    ctx.shadowColor = '#102a4c';
+                    ctx.shadowBlur = 13;
+                }
+                ctx.fillText(text, 512, 82, 970);
+                const texture = new THREE.CanvasTexture(canvas);
+                texture.colorSpace = THREE.SRGBColorSpace;
+                texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+                return texture;
+            }
+
+            function label(text, x, y, z, width = 19) {
+                const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+                    map: textTexture(text), depthTest: false, depthWrite: false
+                }));
+                sprite.position.set(x, y, z);
+                sprite.scale.set(width, width * .15625, 1);
+                sprite.renderOrder = 10;
+                if (text) labelGroup.add(sprite);
+            }
+
+            function sign(parent, text, x, y, z, w = 15, h = 1.9, options = {}) {
+                const bgColor = options.background || '#eff3ed';
+                const textColor = options.color || '#174d81';
+                const fontSize = options.fontSize || 56;
+                const mesh = new THREE.Mesh(
+                    new THREE.PlaneGeometry(w, h),
+                    new THREE.MeshBasicMaterial({
+                        map: textTexture(text, { background: bgColor, color: textColor, size: fontSize })
+                    })
+                );
+                mesh.position.set(x, y, z);
+                if (options.rotationY) mesh.rotation.y = options.rotationY;
+                parent.add(mesh);
+                return mesh;
+            }
+
+            // Multi-line company sign reconstructed from the photographed facade.
+            function tdkSign(parent, x, y, z, w = 20, h = 3, rotY = 0) {
+                const canvas = document.createElement('canvas');
+                canvas.width = 1400;
+                canvas.height = 256;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#f4f5f2';
+                ctx.fillRect(0, 0, 1400, 256);
+                ctx.strokeStyle = '#c7d0d4';
+                ctx.lineWidth = 8;
+                ctx.strokeRect(4, 4, 1392, 248);
+                ctx.fillStyle = '#0b4e8b';
+                ctx.font = '900 italic 102px Arial,sans-serif';
+                ctx.textAlign = 'left';
+                ctx.fillText('TDK', 35, 145);
+                ctx.fillStyle = '#173c5d';
+                ctx.font = 'bold 27px Tahoma,Arial,sans-serif';
+                ctx.textAlign = 'left';
+                ctx.fillText('บริษัท ที.ดี.เค. อินดัสเตรียล จำกัด', 265, 78);
+                ctx.font = 'bold 49px Arial,sans-serif';
+                ctx.fillText('T.D.K. INDUSTRIAL CO., LTD.', 265, 143);
+                ctx.fillStyle = '#263c50';
+                ctx.font = 'bold 21px Arial,sans-serif';
+                ctx.fillText('Precision · Innovation', 1095, 92);
+                ctx.fillText('Technology & Future', 1095, 127);
+                ctx.fillStyle = '#0a4d8c';
+                ctx.fillRect(28, 184, 1344, 7);
+                const texture = new THREE.CanvasTexture(canvas);
+                texture.colorSpace = THREE.SRGBColorSpace;
+                texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+                const mesh = new THREE.Mesh(
+                    new THREE.PlaneGeometry(w, h),
+                    new THREE.MeshBasicMaterial({ map: texture })
+                );
+                mesh.position.set(x, y, z);
+                if (rotY) mesh.rotation.y = rotY;
+                parent.add(mesh);
+                return mesh;
+            }
+
+            // White picket fence builder
+            function picketFence(x1, z1, x2, z2, fenceHeight = 1.2) {
+                const dx = x2 - x1;
+                const dz = z2 - z1;
+                const length = Math.hypot(dx, dz);
+                const group = new THREE.Group();
+                group.position.set((x1 + x2) / 2, 0, (z1 + z2) / 2);
+                group.rotation.y = -Math.atan2(dz, dx);
+                scene.add(group);
+                // Top and bottom horizontal rails
+                box(group, length, .06, .06, 0, fenceHeight * .3, 0, M.picketWhite, false);
+                box(group, length, .06, .06, 0, fenceHeight * .75, 0, M.picketWhite, false);
+                // Vertical pickets
+                const spacing = .45;
+                for (let x = -length / 2 + .15; x < length / 2; x += spacing) {
+                    // Pointed top picket
+                    box(group, .08, fenceHeight, .06, x, fenceHeight / 2, 0, M.picketWhite, false);
+                    // Pointed tip
+                    const tip = new THREE.Mesh(
+                        new THREE.ConeGeometry(.055, .12, 4),
+                        M.picketWhite
+                    );
+                    tip.position.set(x, fenceHeight + .06, 0);
+                    group.add(tip);
+                }
+                // Posts every ~3m
+                for (let x = -length / 2; x <= length / 2; x += 3) {
+                    box(group, .12, fenceHeight + .15, .1, x, (fenceHeight + .15) / 2, 0, M.picketWhite, false);
+                }
+                return group;
+            }
+
+            // Wooden pavilion / gazebo builder
+            function woodenPavilion(x, z, w = 5, d = 4, h = 3.5) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+                scene.add(group);
+                // Floor platform
+                box(group, w + .6, .35, d + .6, 0, .18, 0, M.wood);
+                // 4 corner posts
+                for (const px of [-w / 2 + .2, w / 2 - .2]) {
+                    for (const pz of [-d / 2 + .2, d / 2 - .2]) {
+                        box(group, .2, h, .2, px, h / 2 + .35, pz, M.wood);
+                    }
+                }
+                // Horizontal beams at top
+                box(group, w, .15, .15, 0, h + .2, -d / 2 + .2, M.wood, false);
+                box(group, w, .15, .15, 0, h + .2, d / 2 - .2, M.wood, false);
+                box(group, .15, .15, d, -w / 2 + .2, h + .2, 0, M.wood, false);
+                box(group, .15, .15, d, w / 2 - .2, h + .2, 0, M.wood, false);
+                // Gable roof (A-frame)
+                const roofRise = 1.5;
+                const roofW = w + 1.2;
+                const roofD = d + .8;
+                // Left slope
+                const slopeL = box(group, roofW / 2 + .1, .12, roofD, -roofW / 4 + .05, h + roofRise / 2 + .35, 0, M.woodRoof);
+                slopeL.rotation.z = -Math.atan2(roofRise, roofW / 2);
+                slopeL.position.y = h + .35 + roofRise * .45;
+                slopeL.position.x = -roofW / 4 + .3;
+                // Right slope
+                const slopeR = box(group, roofW / 2 + .1, .12, roofD, roofW / 4 - .05, h + roofRise / 2 + .35, 0, M.woodRoof);
+                slopeR.rotation.z = Math.atan2(roofRise, roofW / 2);
+                slopeR.position.y = h + .35 + roofRise * .45;
+                slopeR.position.x = roofW / 4 - .3;
+                // Ridge beam
+                box(group, .12, .12, roofD, 0, h + roofRise + .35, 0, M.woodDark, false);
+                // Railing/balustrade
+                for (const side of [-1, 1]) {
+                    box(group, w - .4, .08, .08, 0, 1.1, side * (d / 2 - .2), M.wood, false);
+                    box(group, .08, .08, d - .4, side * (w / 2 - .2), 1.1, 0, M.wood, false);
+                }
+                identify(group, 'ศาลาพักผ่อน', 'ศาลาไม้สำหรับพักผ่อนของพนักงาน');
+                return group;
+            }
+
+            // Blue water tank
+            function waterTank(x, z, radius = .8, h = 2) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+                scene.add(group);
+                const tankMat = new THREE.MeshStandardMaterial({
+                    color: '#2255aa', roughness: .35, metalness: .3
+                });
+                cyl(group, radius, radius, h, 0, h / 2 + .1, 0, tankMat, 16);
+                // Lid
+                const lid = new THREE.Mesh(
+                    new THREE.CylinderGeometry(radius + .05, radius + .05, .12, 16),
+                    M.dark
+                );
+                lid.position.set(0, h + .16, 0);
+                group.add(lid);
+                return group;
+            }
+
+            // Blue storage crate
+            function blueCrate(x, z, rotY = 0) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+                group.rotation.y = rotY;
+                scene.add(group);
+                box(group, 1.2, .9, .9, 0, .55, 0, M.blueBox);
+                // Pallet underneath
+                box(group, 1.3, .12, 1, 0, .06, 0, M.wood, false);
+                return group;
+            }
+
+            function blueCabinet(x, z, rotY = 0) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+                group.rotation.y = rotY;
+                scene.add(group);
+                box(group, 1.45, 2.15, .85, 0, 1.12, 0, M.blueBox);
+                box(group, 1.34, .04, .05, 0, 1.14, .45, M.frame, false);
+                for (const side of [-1, 1]) {
+                    box(group, .05, 1.9, .04, side * .68, 1.12, .45, M.frame, false);
+                    box(group, .08, .3, .07, side * .18, 1.18, .48, M.chrome, false);
+                }
+                box(group, 1.55, .13, .95, 0, .07, 0, M.dark);
+                return group;
+            }
+
+            function snackBooth(x, z, rotY = 0) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+                group.rotation.y = rotY;
+                scene.add(group);
+                box(group, 6, 3, 4, 0, 1.7, 0, M.containerYellow);
+                box(group, 6.5, .15, 4.5, 0, 3.25, 0, M.woodRoof);
+                box(group, 6.1, .4, 4.1, 0, .2, 0, M.dark);
+                box(group, 2.5, 1.4, .08, 0, 2, 2.05, M.glassBlue, false);
+                box(group, 1.5, 1.4, .08, -1.8, 2, 2.05, M.glassBlue, false);
+                box(group, 1.2, 2.2, .08, 2.2, 1.3, 2.05, M.dark, false);
+                box(group, 1, .6, .5, 2.5, 2.5, -1.5, M.frame);
+                identify(group, 'ร้านค้า / Canteen Booth', 'ตู้ร้านขนมและเครื่องดื่มที่สามารถย้ายได้');
+                return group;
+            }
+
+            function blueContainerBooth(x, z, rotY = 0) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+                group.rotation.y = rotY;
+                scene.add(group);
+                box(group, 10, 3.2, 4, 0, 1.8, 0, M.containerBlue);
+                box(group, 10.4, .15, 4.4, 0, 3.45, 0, M.paleRoof);
+                box(group, .06, 3.2, .06, -5, 1.6, 2, M.frame, false);
+                box(group, .06, 3.2, .06, 5, 1.6, 2, M.frame, false);
+                for (let xx = -4; xx < 5; xx += 2.5) {
+                    box(group, 1.8, 1.2, .08, xx, 2.2, 2.02, M.glassBlue, false);
+                }
+                identify(group, 'ตู้สีน้ำเงิน', 'อาคารตู้คอนเทนเนอร์สำนักงานชั่วคราวที่สามารถย้ายได้');
+                return group;
+            }
+
+            // Flagpole with Thai flag
+            function flagpole(x, z, height = 9) {
+                cyl(scene, .06, .1, height, x, height / 2, z, M.frame, 8);
+                // Ball on top
+                const ball = new THREE.Mesh(
+                    new THREE.SphereGeometry(.12, 8, 6), M.frame
+                );
+                ball.position.set(x, height, z);
+                scene.add(ball);
+                // Thai flag (red-white-blue-white-red stripes)
+                const flagW = 2.2;
+                const flagH = 1.4;
+                const flagGroup = new THREE.Group();
+                flagGroup.position.set(x + flagW / 2 + .1, height - .3, z);
+                scene.add(flagGroup);
+                const stripeH = flagH / 6;
+                box(flagGroup, flagW, stripeH, .02, 0, stripeH * 2.5, 0, M.flagRed, false);
+                box(flagGroup, flagW, stripeH, .02, 0, stripeH * 1.5, 0, M.flagWhite, false);
+                box(flagGroup, flagW, stripeH * 2, .02, 0, 0, 0, M.flagBlue, false);
+                box(flagGroup, flagW, stripeH, .02, 0, -stripeH * 1.5, 0, M.flagWhite, false);
+                box(flagGroup, flagW, stripeH, .02, 0, -stripeH * 2.5, 0, M.flagRed, false);
+            }
+
+            function identify(group, title, description) {
+                group.traverse(obj => {
+                    if (obj.isMesh) {
+                        obj.userData.info = { title, description };
+                        meshesToPick.push(obj);
+                    }
+                });
+            }
+
+            // ------------------------------------------------------------
+            // Site, fields, pavement and drainage
+            // ------------------------------------------------------------
+            const grassCanvas = document.createElement('canvas');
+            grassCanvas.width = grassCanvas.height = 256;
+            const grassCtx = grassCanvas.getContext('2d');
+            grassCtx.fillStyle = '#748952';
+            grassCtx.fillRect(0, 0, 256, 256);
+            for (let i = 0; i < 16000; i++) {
+                grassCtx.fillStyle = [
+                    '#879758', '#687c45', '#91a164', '#566e3f', '#788d4e'
+                ][Math.floor(rand() * 5)];
+                grassCtx.fillRect(rand() * 256, rand() * 256, 1 + rand() * 3, 1 + rand() * 3);
+            }
+            const grassMap = new THREE.CanvasTexture(grassCanvas);
+            grassMap.colorSpace = THREE.SRGBColorSpace;
+            grassMap.wrapS = grassMap.wrapT = THREE.RepeatWrapping;
+            grassMap.repeat.set(35, 35);
+            const grassMat = new THREE.MeshStandardMaterial({
+                map: grassMap, roughness: 1
+            });
+
+            box(scene, 700, .6, 700, 0, -.9, 0, grassMat, false);
+            box(scene, 157, .75, 166, 0, -.38, -5, M.concrete, false);
+
+            // Concrete zones follow the aerial image: open central court, loading alleys,
+            // service road at the right and the front entrance apron.
+            box(scene, 67, .055, 71, -20, .02, 26, M.concreteLight, false);
+            box(scene, 33, .055, 151, 61, .02, -5, M.concreteDark, false);
+            box(scene, 142, .055, 13, 0, .025, 11, M.concreteDark, false);
+            box(scene, 83, .055, 15, 18, .028, -1, M.concreteLight, false);
+            box(scene, 65, .055, 15, -25, .03, -82, M.asphalt, false);
+            box(scene, 25, .055, 31, -17, .03, 65, M.concreteLight, false);
+
+            // Fine slab joints make the courtyard read as poured concrete rather than a flat plane.
+            for (let x = -64; x < 69; x += 8) box(scene, .055, .018, 151, x, .072, -5, M.concreteDark, false);
+            for (let z = -78; z < 75; z += 8) box(scene, 145, .018, .055, 0, .074, z, M.concreteDark, false);
+
+            // Perimeter curbs and drainage.
+            for (const x of [-78, 78]) {
+                box(scene, .48, .34, 166, x, .12, -5, M.curb, false);
+                box(scene, .8, .06, 160, x - Math.sign(x) * 1.15, .025, -5, M.dark, false);
+            }
+            for (const z of [-88, 78]) {
+                box(scene, 157, .34, .48, 0, .12, z, M.curb, false);
+            }
+
+            // Front road outside the gate.
+            box(scene, 250, .06, 12, -18, -.15, 87, M.asphalt, false);
+            for (let x = -135; x < 105; x += 10) {
+                box(scene, 4, .025, .13, x, -.10, 87, M.white, false);
+            }
+
+            // Circulation roads, yellow lane boundaries and drains.
+            ROADS.forEach((road, index) => stripBetween(
+                scene, toRender(road.from[0]), toRender(road.from[1]), toRender(road.to[0]), toRender(road.to[1]), toRender(road.width),
+                .075 + index * .002, index ? M.concreteDark : M.concreteLight
+            ));
+            stripBetween(scene, -66, 18, -22, 18, .13, .112, M.white, .025);
+            stripBetween(scene, -16, 15, 59, 15, .13, .112, M.yellow, .025);
+            stripBetween(scene, 67, 66, 67, -70, .13, .112, M.yellow, .025);
+            for (let z = -70; z < 70; z += 5.5) box(scene, .58, .035, 1.55, 72.2, .12, z, M.drain, false);
+            for (let x = -56; x < 58; x += 7) box(scene, 1.2, .025, .1, x, .12, 6.3, M.white, false);
+
+            // Signature blue-and-white pedestrian path from the gate to the central court.
+            const blueWalk = WALKWAYS[0];
+            chevronWalkway(...blueWalk.from.map(toRender), ...blueWalk.to.map(toRender), toRender(blueWalk.width));
+            const zebraWalk = WALKWAYS[1];
+            zebraWalkway(...zebraWalk.from.map(toRender), ...zebraWalk.to.map(toRender), toRender(zebraWalk.width));
+            laneBollards(...blueWalk.from.map(toRender), ...blueWalk.to.map(toRender), 2.08);
+
+            // Speed humps and traffic arrows at the approach.
+            for (const z of [58, 63]) stripBetween(scene, -28, z, -13, z, 1, .15, z === 58 ? M.yellow : M.white, .12);
+            for (const z of [29, -12, -52]) {
+                box(scene, 1.8, .025, .12, 64.5, .13, z, M.white, false);
+                const arrowL = box(scene, 1.25, .025, .16, 64, .13, z - 1.0, M.white, false); arrowL.rotation.y = .68;
+                const arrowR = box(scene, 1.25, .025, .16, 65, .13, z - 1.0, M.white, false); arrowR.rotation.y = -.68;
+            }
+
+            // ------------------------------------------------------------
+            // Curved industrial roofs
+            // ------------------------------------------------------------
+            function roofHeight(x, w, eave, rise) {
+                const t = Math.min(1, Math.abs(x) / (w / 2));
+                return eave + rise * (1 - t * t);
+            }
+
+            function roofPatch(parent, w, eave, rise, x1, x2, z1, z2, mat, lift = 0) {
+                const count = Math.max(2, Math.ceil((x2 - x1) * 2));
+                const positions = [];
+                const indices = [];
+                for (let i = 0; i <= count; i++) {
+                    const x = x1 + (x2 - x1) * i / count;
+                    const y = roofHeight(x, w, eave, rise) + lift;
+                    positions.push(x, y, z1, x, y, z2);
+                }
+                for (let i = 0; i < count; i++) {
+                    const n = i * 2;
+                    indices.push(n, n + 1, n + 2, n + 1, n + 3, n + 2);
+                }
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+                geometry.setIndex(indices);
+                geometry.computeVertexNormals();
+                const mesh = new THREE.Mesh(geometry, mat);
+                mesh.castShadow = true;
+                mesh.receiveShadow = true;
+                parent.add(mesh);
+                return mesh;
+            }
+
+            function gable(parent, w, eave, rise, z, mat) {
+                const shape = new THREE.Shape();
+                shape.moveTo(-w / 2, eave - .2);
+                for (let i = 0; i <= 48; i++) {
+                    const x = -w / 2 + w * i / 48;
+                    shape.lineTo(x, roofHeight(x, w, eave, rise));
+                }
+                shape.lineTo(w / 2, eave - .2);
+                shape.closePath();
+                const mesh = new THREE.Mesh(
+                    new THREE.ShapeGeometry(shape),
+                    new THREE.MeshStandardMaterial({
+                        color: mat.color, roughness: .6, metalness: .2,
+                        side: THREE.DoubleSide
+                    })
+                );
+                mesh.position.z = z;
+                mesh.castShadow = true;
+                parent.add(mesh);
+            }
+
+            function awning(parent, x, z, w, d, y) {
+                const top = box(parent, w, .16, d, x, y, z, M.roof);
+                top.rotation.x = .055;
+                for (let px = x - w / 2 + .6; px < x + w / 2; px += 5) {
+                    cyl(parent, .08, .08, y, px, y / 2, z + d / 2 - .2, M.frame, 8);
+                }
+            }
+
+            function warehouse({
+                id, name, x, z, w, d, h = 10, rise = 3, labelText = name, vent = true,
+                rotationY = 0, skylightPattern = 'sparse', facade = {}, evidence = []
+            }) {
+                const group = new THREE.Group();
+                group.name = id || name;
+                group.position.set(x, 0, z);
+                group.rotation.y = rotationY;
+                scene.add(group);
+                registerCollider(x, z, w, d, 1.05);
+
+                box(group, w, .6, d, 0, .3, 0, M.base);
+                box(group, w, h, d, 0, h / 2 + .3, 0, M.wall);
+                const blueRatio = facade.blueRatio || .42;
+                const blueHeight = h * blueRatio;
+                box(group, w + .12, blueHeight, d + .12, 0, .3 + h - blueHeight / 2, 0, M.blue);
+
+                // Deep projecting blue facade band seen on Doke 1 / Doke 2.
+                box(group, w + .55, .62, .48, 0, h * .72, d / 2 + .22, M.roofDark);
+                box(group, w + .55, .62, .48, 0, h * .72, -d / 2 - .22, M.roofDark);
+                box(group, w + .9, .22, .7, 0, h + .28, d / 2 + .28, M.blue);
+
+                // Individual wall bays, windows, and structural columns.
+                for (let side of [-1, 1]) {
+                    for (let zz = -d / 2 + 2; zz < d / 2; zz += 5) {
+                        box(group, .18, h, .23, side * (w / 2 + .1), h / 2, zz, M.frame);
+                        box(group, .06, 1.15, 2.8, side * (w / 2 + .13), 3.5, zz, M.glass, false);
+                        box(group, .08, .8, 2.15, side * (w / 2 + .16), 6.1, zz, M.glass, false);
+                    }
+                }
+
+                const rw = w + 1.8;
+                const rd = d + 1.6;
+                const splitRackRoof = id === 'rack_dome';
+                const barrelZ1 = splitRackRoof ? -rd * .08 : -rd / 2;
+                if (splitRackRoof) {
+                    const flatZ1 = -rd / 2;
+                    const flatZ2 = barrelZ1;
+                    const flatDepth = flatZ2 - flatZ1;
+                    box(group, rw, .42, flatDepth, 0, h + .58, (flatZ1 + flatZ2) / 2, M.roofDark);
+                    for (let xx = -rw / 2 + .6; xx < rw / 2; xx += 1.25) {
+                        box(group, .055, .055, flatDepth - .35, xx, h + .82,
+                            (flatZ1 + flatZ2) / 2, M.roofRib, false);
+                    }
+                    box(group, rw + .3, .72, .38, 0, h + .72, barrelZ1 - .06, M.blue);
+                    roofPatch(group, rw, h + .45, rise, -rw / 2, rw / 2,
+                        barrelZ1, rd / 2, M.roof);
+                    gable(group, rw, h + .45, rise, barrelZ1, M.blue);
+                    gable(group, rw, h + .45, rise, rd / 2, M.blue);
+                } else {
+                    roofPatch(group, rw, h + .45, rise, -rw / 2, rw / 2, -rd / 2, rd / 2, M.roof);
+                    gable(group, rw, h + .45, rise, rd / 2, M.blue);
+                    gable(group, rw, h + .45, rise, -rd / 2, M.blue);
+                }
+
+                // Fine longitudinal standing seams.
+                for (let xx = -rw / 2 + .45; xx < rw / 2; xx += 1.05) {
+                    const yy = roofHeight(xx, rw, h + .45, rise) + .045;
+                    const seamDepth = rd / 2 - barrelZ1;
+                    box(group, .055, .055, seamDepth, xx, yy,
+                        barrelZ1 + seamDepth / 2, M.roofRib, false);
+                }
+
+                // Roof lights vary by building; the front rack dome has transverse translucent bands.
+                if (skylightPattern === 'centerBands') {
+                    // The real rack dome uses milky bands crossing the full curved roof,
+                    // repeated from the flat-roof transition toward the front canopy.
+                    for (let zz = barrelZ1 + 3.1; zz < rd / 2 - 2; zz += 6.4) {
+                        roofPatch(group, rw, h + .45, rise,
+                            -rw / 2 + .5, rw / 2 - .5, zz, zz + 1.15, M.skylight, .09);
+                    }
+                } else if (skylightPattern !== 'vents' && skylightPattern !== 'none') {
+                    const skylightStep = skylightPattern === 'dense' ? 6.4 : 11.5;
+                    for (let zz = -d / 2 + 6; zz < d / 2 - 3; zz += skylightStep) {
+                        roofPatch(group, rw, h + .45, rise, -rw / 2 + .45, rw / 2 - .45,
+                            zz, zz + .45, M.skylight, .055);
+                    }
+                }
+
+                // Gutters and downpipes.
+                for (let side of [-1, 1]) {
+                    box(group, .24, .25, rd, side * (rw / 2), h + .38, 0, M.roofDark);
+                    for (let zz = -d / 2 + 1; zz < d / 2; zz += 15) {
+                        cyl(group, .08, .08, h, side * (w / 2 + .3), h / 2, zz, M.frame, 8);
+                    }
+                }
+
+                // Roof ridge ventilation housings.
+                if (vent) {
+                    for (const zz of [-d * .25, d * .23]) {
+                        box(group, 4, .8, 7.5, 0, h + rise + .55, zz, M.roofDark);
+                        box(group, 4.5, .17, 8, 0, h + rise + 1, zz, M.blue);
+                    }
+                } else if (!splitRackRoof) {
+                    for (let zz = -d / 2 + 5; zz < d / 2; zz += 9) {
+                        for (let xx = -w / 2 + 7; xx < w / 2; xx += 9) {
+                            const yy = roofHeight(xx, rw, h + .45, rise);
+                            cyl(group, .18, .23, .42, xx, yy + .22, zz, M.frame, 10);
+                            cyl(group, .34, .22, .18, xx, yy + .48, zz, M.paleRoof, 12);
+                        }
+                    }
+                }
+
+                // The photographed halls have distinct fronts; do not repeat a dock pattern on every hall.
+                const profile = facade.type || 'store';
+                const doorCount = facade.loadingDoors ?? 1;
+                for (let i = 0; i < doorCount; i++) {
+                    const spacing = Math.min(7, (w - 5.5) / Math.max(1, doorCount));
+                    const xx = (i - (doorCount - 1) / 2) * spacing;
+                    box(group, 4.8, 4.5, .1, xx, 2.55, d / 2 + .09, M.dark);
+                    box(group, 4.5, 3.8, .12, xx, 2.8, d / 2 + .17, M.base, false);
+                    for (let yy = 1.1; yy < 4.6; yy += .28) {
+                        box(group, 4.4, .035, .03, xx, yy, d / 2 + .25, M.frame, false);
+                    }
+                    box(group, 5.15, .38, 2.2, xx, .28, d / 2 + 1.05, M.concreteDark);
+                    box(group, .2, 1.05, .2, xx - 2.65, .54, d / 2 + 1.92, M.safety);
+                    box(group, .2, 1.05, .2, xx + 2.65, .54, d / 2 + 1.92, M.safety);
+                    for (const side of [-1, 1]) {
+                        box(group, .18, .65, .22, xx + side * 2.28, 1.1, d / 2 + .38, M.rubber);
+                    }
+                    const lamp = box(group, .62, .16, .38, xx, 5.22, d / 2 + .48, M.white, false);
+                    lamp.rotation.x = -.26;
+                }
+
+                if (profile === 'louvered') {
+                    for (let yy = h * .56; yy < h * .83; yy += .34) {
+                        box(group, w - 2.2, .09, .12, 0, yy, d / 2 + .2, M.roofRib, false);
+                    }
+                    for (let xx = -w / 2 + 3; xx < w / 2 - 2; xx += 4.4) {
+                        box(group, 2.8, .78, .11, xx, 2.45, d / 2 + .2, M.glass, false);
+                    }
+                    awning(group, w * .19, d / 2 + 1.45, w * .6, 3.4, 5.1);
+                } else if (profile === 'rack') {
+                    for (let xx = -w / 2 + 2.6; xx < w / 2 - 1; xx += 4.2) {
+                        box(group, 3.6, 3.25, .15, xx, 2.15, d / 2 + .19, M.glass);
+                        box(group, .16, 4.4, .2, xx - 1.9, 2.5, d / 2 + .25, M.frame);
+                    }
+                    awning(group, 0, d / 2 + 1.25, w + .5, 2.7, 4.85);
+                } else if (profile === 'quiet') {
+                    for (let xx = -w / 2 + 3; xx < w / 2 - 2; xx += 4.5) {
+                        box(group, 3.1, .82, .11, xx, 2.4, d / 2 + .2, M.glass, false);
+                    }
+                    awning(group, w * .24, d / 2 + 1.3, w * .43, 2.8, 4.75);
+                } else {
+                    for (let xx = -w / 2 + 3; xx < w / 2 - 2; xx += 4.5) {
+                        box(group, 3.1, .78, .11, xx, 2.25, d / 2 + .2, M.glass, false);
+                    }
+                    awning(group, 0, d / 2 + 1.5, w * .72, 3.5, 5.1);
+                }
+
+                if (facade.sign) {
+                    const majorFacade = id === 'doke2_assy';
+                    tdkSign(group, 0, h + (majorFacade ? .88 : .62), d / 2 + .43,
+                        majorFacade ? Math.min(31, w * .76) : Math.min(22, w * .68),
+                        majorFacade ? 3.35 : 2.2);
+                }
+
+                // Rear service canopy and utility doors make the long alleys read like the photo.
+                box(group, w * .58, .18, 2.3, 0, 3.9, -d / 2 - 1.12, M.paleRoof);
+                for (let xx = -w * .25; xx <= w * .25; xx += Math.max(5, w * .18)) {
+                    cyl(group, .075, .075, 3.8, xx, 1.9, -d / 2 - 2.05, M.frame, 8);
+                    box(group, 2.4, 2.7, .09, xx, 1.65, -d / 2 - .08, M.dark);
+                }
+                label(labelText, x, h + rise + 4, z, Math.max(15, w * .56));
+
+                identify(group, name,
+                    `หลังคาโลหะโค้งสีน้ำเงิน · facade ${profile} · อ้างอิง ${evidence.join(', ') || 'ภาพถ่าย'}`);
+                return group;
+            }
+
+            // Building geometry is generated from the central layout table above.
+            const warehouseLabels = {
+                doke1_west: 'Doke 1', doke1_store: 'Store',
+                doke2_assy: 'Doke 2', rack_dome: 'โดมเก็บแร็ค'
+            };
+            const warehouseGroups = {};
+            BUILDINGS.filter(item => item.roof.type === 'barrel').forEach(item => {
+                warehouseGroups[item.id] = warehouse({
+                    id: item.id, name: item.name, labelText: warehouseLabels[item.id],
+                    x: toRender(item.position.x), z: toRender(item.position.z),
+                    w: toRender(item.size.width), d: toRender(item.size.depth), h: toRender(item.size.height),
+                    rise: toRender(item.roof.rise), vent: item.vent, rotationY: item.rotationY,
+                    skylightPattern: item.roof.skylight, facade: item.facade, evidence: item.evidence
+                });
+            });
+
+            // Store loading canopy runs along the right-hand side where delivery trucks dock.
+            const storeData = BUILDING_BY_ID.doke1_store;
+            const storeGroup = warehouseGroups.doke1_store;
+            const storeW = toRender(storeData.size.width);
+            const storeD = toRender(storeData.size.depth);
+            const storeCanopyX = storeW / 2 + 2.9;
+            box(storeGroup, 5.9, .24, storeD * .76, storeCanopyX, 5.45, 1.2, M.paleRoof);
+            box(storeGroup, 6.1, .12, storeD * .76, storeCanopyX, 5.62, 1.2, M.roofDark);
+            for (let zz = -storeD * .34; zz <= storeD * .34; zz += 8.2) {
+                cyl(storeGroup, .11, .11, 5.35, storeW / 2 + 5.35, 2.68, zz + 1.2, M.frame, 8);
+            }
+
+            // Covered connector between Doke 2 and the rear flat-roof zone of the rack dome.
+            const doke2Data = BUILDING_BY_ID.doke2_assy;
+            const rackData = BUILDING_BY_ID.rack_dome;
+            const doke2FrontZ = toRender(doke2Data.position.z + doke2Data.size.depth / 2);
+            const rackRearZ = toRender(rackData.position.z - rackData.size.depth / 2);
+            const connectorDepth = Math.max(4, rackRearZ - doke2FrontZ + 1.1);
+            const connectorZ = (doke2FrontZ + rackRearZ) / 2;
+            const connectorX = toRender(rackData.position.x);
+            const connectorWidth = toRender(rackData.size.width) * .72;
+            box(scene, connectorWidth, .3, connectorDepth, connectorX, 6.65, connectorZ, M.roofDark);
+            box(scene, connectorWidth - .7, .12, connectorDepth - .4, connectorX, 6.82, connectorZ, M.skylight);
+            for (const xx of [connectorX - connectorWidth / 2 + .8, connectorX + connectorWidth / 2 - .8]) {
+                for (const zz of [doke2FrontZ + .5, rackRearZ - .5]) {
+                    cyl(scene, .11, .11, 6.55, xx, 3.28, zz, M.frame, 8);
+                }
+            }
+            label('Assy Hanon', toRender(doke2Data.position.x + 9),
+                toRender(doke2Data.size.height + doke2Data.roof.rise) + 4,
+                toRender(doke2Data.position.z - 10), 18);
+
+            // Connector roofs and covered loading areas.
+            box(scene, 7, .24, 62, 17, 6.4, -40, M.paleRoof);
+            for (let z = -68; z < -10; z += 8) {
+                cyl(scene, .11, .11, 6.4, 17, 3.2, z, M.frame);
+            }
+
+            // Covered loading spine, dock lamps and pallet stacks between the main halls.
+            for (let z = -70; z < -12; z += 7.5) {
+                box(scene, 3.1, .7, 1.2, 19, .45, z, M.base);
+                box(scene, 2.7, .7, 1.05, 19, .85, z, Math.round(z) % 2 ? M.yellow : M.blue);
+                cyl(scene, .08, .08, 6.2, 15.7, 3.1, z, M.frame, 8);
+                box(scene, .7, .16, .45, 15.7, 6.18, z, M.white, false);
+            }
+
+            // Utility tanks and service plant visible behind Assy Hanon.
+            for (let i = 0; i < 4; i++) {
+                const tank = cyl(scene, 1.2, 1.2, 4.4, 70.5, 2.3, -71 + i * 3.5, M.frame, 18);
+                const cap = new THREE.Mesh(new THREE.SphereGeometry(1.2, 18, 8, 0, Math.PI * 2, 0, Math.PI / 2), M.paleRoof);
+                cap.position.set(70.5, 4.5, -71 + i * 3.5);
+                cap.castShadow = true;
+                scene.add(cap);
+                box(scene, 2.7, .18, 2.7, 70.5, .15, -71 + i * 3.5, M.concreteDark);
+            }
+
+            // Yellow-black safety curbs along the two busiest loading alleys.
+            for (let z = -71; z < -12; z += 2.4) {
+                box(scene, .8, .16, .72, 20.8, .12, z, Math.round(z / 2.4) % 2 ? M.yellow : M.dark, false);
+            }
+
+            // ------------------------------------------------------------
+            // Office block and rear canteen
+            // ------------------------------------------------------------
+            function officeBlock(name, x, z, w, d, h, roofMat = M.paleRoof, id = name, rotationY = 0) {
+                const group = new THREE.Group();
+                group.name = id;
+                group.position.set(x, 0, z);
+                group.rotation.y = rotationY;
+                scene.add(group);
+                const colliderW = Math.abs(w * Math.cos(rotationY)) + Math.abs(d * Math.sin(rotationY));
+                const colliderD = Math.abs(w * Math.sin(rotationY)) + Math.abs(d * Math.cos(rotationY));
+                registerCollider(x, z, colliderW, colliderD, .85);
+
+                box(group, w + 1, .48, d + 1, 0, .24, 0, M.base);
+                box(group, w, h, d, 0, h / 2, 0, M.office);
+
+                // Horizontal facade bands.
+                for (const yy of [1, 4.3, h - .2]) {
+                    box(group, w + .12, .24, d + .12, 0, yy, 0, M.frame);
+                }
+
+                for (const yy of [2.6, 6.0]) {
+                    for (let xx = -w / 2 + 1.45; xx < w / 2 - 1; xx += 2.55) {
+                        for (const side of [-1, 1]) {
+                            box(group, 2.15, 1.7, .07, xx, yy, side * (d / 2 + .045), M.glass, false);
+                            box(group, .065, 1.7, .10, xx, yy, side * (d / 2 + .10), M.frame, false);
+                            box(group, 2.3, .1, .15, xx, yy - .9, side * (d / 2 + .1), M.frame, false);
+                        }
+                    }
+                    for (let zz = -d / 2 + 1.5; zz < d / 2 - 1; zz += 2.65) {
+                        for (const side of [-1, 1]) {
+                            box(group, .07, 1.7, 2.15, side * (w / 2 + .045), yy, zz, M.glass, false);
+                            box(group, .12, 1.7, .07, side * (w / 2 + .1), yy, zz, M.frame, false);
+                        }
+                    }
+                }
+
+                box(group, w + 1, .25, d + 1, 0, h + .1, 0, roofMat);
+                for (const side of [-1, 1]) {
+                    box(group, .2, .65, d + .5, side * w / 2, h + .35, 0, M.office);
+                    box(group, w, .65, .2, 0, h + .35, side * d / 2, M.office);
+                }
+                // Deep stepped parapet seen on the real two-storey office.
+                box(group, w + 1.1, .48, .5, 0, h + .72, d / 2 + .08, M.office);
+                box(group, 4.2, .85, .55, 0, h + .95, d / 2 + .12, M.office);
+                for (const xx of [-w / 2 + .4, w / 2 - .4]) {
+                    box(group, .75, h + .75, .42, xx, (h + .75) / 2, d / 2 + .12, M.office);
+                }
+                for (let xx = -w / 2; xx <= w / 2; xx += 1.5) {
+                    box(group, .045, .04, d, xx, h + .25, 0, M.frame, false);
+                }
+
+                identify(group, name, 'อาคารสำนักงานและส่วนสนับสนุน จำลองจากภาพภายนอก');
+                return group;
+            }
+
+            const officeData = BUILDING_BY_ID.main_office;
+            const office = officeBlock(
+                'Main Office — T.D.K INDUSTRIAL CO., LTD.',
+                toRender(officeData.position.x), toRender(officeData.position.z),
+                toRender(officeData.size.width), toRender(officeData.size.depth), toRender(officeData.size.height),
+                M.paleRoof, officeData.id, officeData.rotationY
+            );
+            label('Main Office', toRender(officeData.position.x), 15.2, toRender(officeData.position.z), 18);
+
+            // Second-floor balcony rails and exterior AC units visible in the ground photos.
+            for (const y of [4.58, 5.35]) box(office, 19.8, .08, .08, -2.6, y, 11.82, M.chrome, false);
+            for (let xx = -12.1; xx < 7.4; xx += 2.1) box(office, .065, .82, .07, xx, 4.95, 11.82, M.chrome, false);
+            for (const y of [4.58, 5.35]) box(office, .08, .08, 16.8, 13.72, y, -2.4, M.chrome, false);
+            for (let zz = -10.2; zz < 5.9; zz += 2.1) box(office, .07, .82, .065, 13.72, 4.95, zz, M.chrome, false);
+            for (let zz = -8; zz <= 7; zz += 3.8) {
+                box(office, .55, .62, 1.15, 13.62, 5.55, zz, M.frame);
+                const fan = cyl(office, .22, .22, .04, 13.92, 5.55, zz, M.dark, 16);
+                fan.rotation.z = Math.PI / 2;
+            }
+            for (const xx of [-10, 0, 10]) {
+                const flood = box(office, .52, .24, .18, xx, 9.22, 9.8, M.dark, false);
+                flood.rotation.x = -.28;
+            }
+
+            // Curved translucent blue entrance canopy, centred on the facade facing
+            // the central yard, as in the aerial reference.
+            const officeFacadeZ = toRender(officeData.size.depth) / 2;
+            const officeCanopyZ = officeFacadeZ + 1.2;
+            const officeCanopy = new THREE.Group();
+            officeCanopy.position.set(0, 0, officeCanopyZ);
+            office.add(officeCanopy);
+            roofPatch(officeCanopy, 9.7, 4.02, .68, -4.85, 4.85, -2.85, 2.85, M.canopyGlass, .06);
+            gable(officeCanopy, 9.7, 4.02, .68, 2.85, M.glassBlue);
+            gable(officeCanopy, 9.7, 4.02, .68, -2.85, M.glassBlue);
+            for (let xx = -4.3; xx <= 4.3; xx += 1.45) {
+                const yy = roofHeight(xx, 9.7, 4.02, .68) + .08;
+                box(officeCanopy, .055, .055, 5.7, xx, yy, 0, M.roofRib, false);
+            }
+            for (const xx of [-4.1, 4.1]) {
+                cyl(office, .24, .24, 3.85, xx, 1.93, officeCanopyZ + 2.2, M.chrome, 20);
+            }
+            box(office, 5.3, 2.9, .12, 0, 1.72, officeFacadeZ + .08, M.glassBlue);
+            for (let i = 0; i < 3; i++) {
+                box(office, 8.6 - i * .45, .16, 1.1, 0, .11 + i * .14,
+                    officeFacadeZ - .35 + i * .6, M.curb);
+            }
+
+            // TDK sign on office front facade (matching reference photo)
+            const officeSignZ = officeFacadeZ + .62;
+            tdkSign(office, 0, 8.05, officeSignZ, 19.5, 2.65);
+
+            // Office forecourt follows the east-facing entrance toward the central yard.
+            // Keep the centre of the canopy clear so landscaping never hides the sign/door.
+            for (let i = 0; i < 4; i++) {
+                box(scene, 2.25 - i * .22, .14, 8.7 - i * .55,
+                    -33.35 - i * .42, .1 + i * .14, 27.8, M.curb);
+            }
+            for (const z of [21.9, 38.8, 43.0, 47.2]) {
+                box(scene, 1.5, .65, 3.1, -35.2, .42, z, M.foliage[1]);
+                box(scene, 1.2, .35, 2.7, -35.2, .94, z, M.foliage[0]);
+            }
+            for (let x = -60; x < -39; x += 4) {
+                box(scene, 3.2, .55, 1.15, x, .36, 48.2, M.foliage[1]);
+            }
+            VEGETATION.officePalms.forEach(([x, z, size]) => palm(toRender(x), toRender(z), toRender(size)));
+
+            // ==========================================================
+            // White picket fence in front of office (visible in photo 1 & 2)
+            // ==========================================================
+            picketFence(-65, 50, -33, 50, 1.0);
+            picketFence(-33, 50, -33, 22, 1.0);
+            picketFence(-65, 50, -65, 22, 1.0);
+
+            // ==========================================================
+            // Wooden Pavilion / Gazebo with blue water tanks (photo 1 & 2)
+            // ==========================================================
+            const pavilionObject = registerEditable(
+                woodenPavilion(-25, 40, 5.5, 4.5, 3.2),
+                { id: 'pavilion-main', type: 'pavilion', label: 'ศาลาพักผ่อน' }
+            );
+            // Blue water tanks beside the pavilion
+            registerEditable(waterTank(-21.5, 38, .7, 1.8),
+                { id: 'water-tank-1', type: 'waterTank', label: 'ถังน้ำสีน้ำเงิน 1' });
+            registerEditable(waterTank(-20.5, 40, .7, 1.8),
+                { id: 'water-tank-2', type: 'waterTank', label: 'ถังน้ำสีน้ำเงิน 2' });
+
+            // ==========================================================
+            // Container canteen booth (yellow/blue - photo 2)
+            // ==========================================================
+            const containerBooth = registerEditable(
+                snackBooth(-69.5, 17),
+                { id: 'snack-booth-main', type: 'snackBooth', label: 'กล่อง/ร้านขนม' }
+            );
+            label('กล่องขนม', -69.5, 5.8, 17, 14);
+
+            // ==========================================================
+            // Blue container/warehouse booth next to it (photo 2)
+            // ==========================================================
+            const blueContainer = registerEditable(
+                blueContainerBooth(-6, 54),
+                { id: 'blue-container-main', type: 'blueContainer', label: 'ตู้คอนเทนเนอร์สีน้ำเงิน' }
+            );
+
+            // ==========================================================
+            // Blue storage crates stacked near buildings (photo 3, 4, 5)
+            // ==========================================================
+            let defaultCrateSequence = 0;
+            function defaultBlueCrate(x, z, rotY = 0, y = 0) {
+                const crate = blueCrate(x, z, rotY);
+                crate.position.y = y;
+                return registerEditable(crate, {
+                    id: `blue-crate-${++defaultCrateSequence}`,
+                    type: 'blueCrate', label: `ลังสีน้ำเงิน ${defaultCrateSequence}`
+                });
+            }
+            // Crates near main office / Doke 1 entrance
+            for (let i = 0; i < 3; i++) {
+                for (let j = 0; j < 2; j++) {
+                    defaultBlueCrate(-40 + i * 1.4, 16 + j * 1.1);
+                }
+            }
+            // Stack second layer
+            for (let i = 0; i < 2; i++) {
+                defaultBlueCrate(-39.3 + i * 1.4, 16.5, 0, 1.05);
+            }
+            // Crates near Doke 2
+            for (let i = 0; i < 4; i++) {
+                for (let j = 0; j < 2; j++) {
+                    defaultBlueCrate(22 + i * 1.4, 6 + j * 1.1);
+                }
+            }
+            for (let i = 0; i < 3; i++) {
+                defaultBlueCrate(22.7 + i * 1.4, 6.5, 0, 1.05);
+            }
+            // Crates near right side (visible in photo 4)
+            for (let i = 0; i < 3; i++) {
+                for (let j = 0; j < 3; j++) {
+                    defaultBlueCrate(55 + i * 1.4, 10 + j * 1.1, .1);
+                }
+            }
+
+            // ==========================================================
+            // Flagpoles with Thai flags (photo 3, 4, 5)
+            // ==========================================================
+            flagpole(38, 12, 10);
+            flagpole(41, 12, 10);
+            flagpole(44, 12, 10);
+
+            // ==========================================================
+            // Info/company sign board near entrance (photo 3)
+            // ==========================================================
+            const signBoard = new THREE.Group();
+            signBoard.position.set(52, 0, 14);
+            scene.add(signBoard);
+            // Posts
+            box(signBoard, .1, 2, .1, -.8, 1, 0, M.frame);
+            box(signBoard, .1, 2, .1, .8, 1, 0, M.frame);
+            // Sign panel
+            sign(signBoard, 'T.D.K INDUSTRIAL', 0, 1.5, .08, 2, 1.2, { background: '#ffffff', color: '#0a4d8c', fontSize: 42 });
+
+            const canteenData = BUILDING_BY_ID.canteen;
+            const canteenWidth = toRender(canteenData.size.width);
+            const canteenDepth = toRender(canteenData.size.depth);
+            const canteenHeight = toRender(canteenData.size.height);
+            const canteenRise = toRender(canteenData.roof.rise);
+            const canteen = officeBlock(
+                'Canteen / DV FL 2 / DIE-SET FL 2', toRender(canteenData.position.x), toRender(canteenData.position.z),
+                canteenWidth, canteenDepth, canteenHeight, M.blue,
+                canteenData.id, canteenData.rotationY
+            );
+            const canteenRoofWidth = canteenWidth + 1;
+            const canteenRoofDepth = canteenDepth + 1.2;
+            roofPatch(canteen, canteenRoofWidth, canteenHeight + .4, canteenRise,
+                -canteenRoofWidth / 2, canteenRoofWidth / 2,
+                -canteenRoofDepth / 2, canteenRoofDepth / 2, M.roofDark);
+            gable(canteen, canteenRoofWidth, canteenHeight + .4, canteenRise, canteenRoofDepth / 2, M.blue);
+            gable(canteen, canteenRoofWidth, canteenHeight + .4, canteenRise, -canteenRoofDepth / 2, M.blue);
+            label('Canteen / DV FL 2 / DIE-SET FL 2', toRender(canteenData.position.x), canteenHeight + canteenRise + 3,
+                toRender(canteenData.position.z), 34);
+
+            // Doke 1 office wing canopy and lower blue belt from the photo.
+            box(canteen, canteenWidth + 1.8, .7, .55, 0, canteenHeight - .85, canteenDepth / 2 + .35, M.roofDark);
+            awning(canteen, 0, canteenDepth / 2 + 1.6, canteenWidth - 2, 3.1, 4.1);
+
+            // Small service buildings.
+            box(scene, 7, 3.1, 8, -72, 1.55, -2, M.wall);
+            box(scene, 8, .2, 9, -72, 3.2, -2, M.paleRoof);
+            registerCollider(-72, -2, 7, 8, .6);
+            label('ห้องปั๊ม', -72, 5.5, -2, 11);
+
+            // ------------------------------------------------------------
+            // Parking shelters, cars and security gate
+            // ------------------------------------------------------------
+            function car(parent, x, z, color, rotation = 0) {
+                const group = new THREE.Group();
+                group.position.set(x, .25, z);
+                group.rotation.y = rotation;
+                parent.add(group);
+                const paint = material(color, .35, .45);
+                box(group, 1.85, .72, 4.1, 0, .65, 0, paint);
+                box(group, 1.58, .63, 2.15, 0, 1.25, -.17, M.glass);
+                box(group, 1.62, .12, 2.2, 0, 1.58, -.17, paint);
+                for (const xx of [-.94, .94]) {
+                    for (const zz of [-1.28, 1.28]) {
+                        const wheel = cyl(group, .36, .36, .19, xx, .39, zz, M.rubber, 12);
+                        wheel.rotation.z = Math.PI / 2;
+                    }
+                }
+                for (const xx of [-.58, .58]) {
+                    box(group, .42, .22, .06, xx, .79, 2.07, M.white, false);
+                    box(group, .42, .20, .06, xx, .79, -2.07, M.red, false);
+                }
+            }
+
+            function parking(x, z, w, d, count, bayAxis = 'x') {
+                box(scene, w, .06, d, x, .055, z, M.asphalt, false);
+                for (let i = 0; i <= count; i++) {
+                    if (bayAxis === 'z') {
+                        const zz = z - d / 2 + i * d / count;
+                        box(scene, w - .6, .02, .09, x, .1, zz, M.white, false);
+                    } else {
+                        const xx = x - w / 2 + i * w / count;
+                        box(scene, .09, .02, d - .6, xx, .1, z, M.white, false);
+                    }
+                }
+                const roof = box(scene, w + 1, .18, d + 1, x, 3.65, z, M.paleRoof);
+                roof.rotation.x = .065;
+                if (bayAxis === 'z') {
+                    for (let zz = z - d / 2; zz <= z + d / 2; zz += 1.1) {
+                        const seam = box(scene, w + .8, .045, .045, x, 3.78, zz, M.frame, false);
+                        seam.rotation.x = .065;
+                    }
+                } else {
+                    for (let xx = x - w / 2; xx <= x + w / 2; xx += 1.1) {
+                        const seam = box(scene, .045, .045, d + .8, xx, 3.78, z, M.frame, false);
+                        seam.rotation.x = .065;
+                    }
+                }
+                if (bayAxis === 'z') {
+                    for (let zz = z - d / 2; zz <= z + d / 2 + .1; zz += d / 4) {
+                        for (const xx of [x - w / 2 + .4, x + w / 2 - .4]) {
+                            cyl(scene, .085, .085, 3.55, xx, 1.775, zz, M.frame);
+                        }
+                    }
+                } else {
+                    for (let xx = x - w / 2; xx <= x + w / 2 + .1; xx += w / 4) {
+                        for (const zz of [z - d / 2 + .4, z + d / 2 - .4]) {
+                            cyl(scene, .085, .085, 3.55, xx, 1.775, zz, M.frame);
+                        }
+                    }
+                }
+                const colors = ['#e7e9e4', '#a5adb1', '#344652', '#e8e6de', '#26353b'];
+                for (let i = 0; i < count; i++) {
+                    if (rand() > .18) {
+                        if (bayAxis === 'z') {
+                            car(scene, x, z - d / 2 + (i + .5) * d / count,
+                                colors[i % colors.length], Math.PI / 2);
+                        } else {
+                            car(scene, x - w / 2 + (i + .5) * w / count,
+                                z, colors[i % colors.length]);
+                        }
+                    }
+                }
+            }
+            PARKING_AREAS.forEach(area => parking(
+                toRender(area.x), toRender(area.z), toRender(area.width), toRender(area.depth),
+                area.spaces, area.bayAxis
+            ));
+            label('ลานจอดรถ', -61, 6.7, 66, 18);
+
+            // Low service / bicycle shelter visible in the gap behind the parking row.
+            const parkingAnnex = new THREE.Group();
+            parkingAnnex.name = 'Parking service shelter';
+            parkingAnnex.position.set(-42.5, 0, 59.5);
+            scene.add(parkingAnnex);
+            box(parkingAnnex, 8.2, 2.45, 4.8, 0, 1.23, 0, M.wall);
+            box(parkingAnnex, 7.4, 1.35, .08, 0, 1.65, 2.44, M.glass, false);
+            box(parkingAnnex, 9.2, .16, 5.4, 0, 2.58, 0, M.paleRoof);
+            for (const xx of [-4, 4]) {
+                for (const zz of [-2.1, 2.1]) cyl(parkingAnnex, .08, .08, 2.5, xx, 1.25, zz, M.frame, 8);
+            }
+
+            function hipRoof(parent, x, y, z, w, d) {
+                box(parent, w + .7, .16, d + .7, x, y - .05, z, M.roofDark);
+                const roof = new THREE.Mesh(new THREE.ConeGeometry(1, 1, 4), M.roof);
+                roof.position.set(x, y + .48, z);
+                roof.rotation.y = Math.PI / 4;
+                roof.scale.set(w * .73, 1.15, d * .73);
+                roof.castShadow = true;
+                roof.receiveShadow = true;
+                parent.add(roof);
+                return roof;
+            }
+
+            function speedLimitSign(x, z, rotationY = 0) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+                group.rotation.y = rotationY;
+                scene.add(group);
+                cyl(group, .07, .09, 3.6, 0, 1.8, 0, M.dark, 10);
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = 256;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#f7f7f2'; ctx.beginPath(); ctx.arc(128, 128, 112, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = '#b43b39'; ctx.lineWidth = 18; ctx.stroke();
+                ctx.fillStyle = '#172c38'; ctx.font = '900 92px Arial'; ctx.textAlign = 'center'; ctx.fillText('20', 128, 135);
+                ctx.font = 'bold 28px Tahoma'; ctx.fillText('กม./ชม.', 128, 178);
+                const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+                const face = new THREE.Mesh(new THREE.CircleGeometry(.92, 40), new THREE.MeshBasicMaterial({ map: texture }));
+                face.position.set(0, 3.4, .04); group.add(face);
+            }
+
+            function trafficLight(x, z) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z); scene.add(group);
+                cyl(group, .08, .11, 4.7, 0, 2.35, 0, M.dark, 10);
+                box(group, .65, 1.65, .5, .42, 3.7, 0, M.dark);
+                ['#ef443c', '#f2c84b', '#42bc63'].forEach((color, i) => {
+                    const lamp = new THREE.Mesh(new THREE.SphereGeometry(.18, 12, 8), new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: i === 2 ? 1.1 : .15 }));
+                    lamp.position.set(.42, 4.18 - i * .48, .28); group.add(lamp);
+                });
+            }
+
+            function solarLamp(x, z, rotationY = 0) {
+                const group = new THREE.Group(); group.position.set(x, 0, z); group.rotation.y = rotationY; scene.add(group);
+                cyl(group, .08, .12, 7.5, 0, 3.75, 0, M.dark, 10);
+                beam(group, [0, 7.1, 0], [1.7, 7.1, 0], .075, M.dark);
+                const panel = box(group, 1.35, .09, .7, .15, 7.55, 0, M.glassBlue); panel.rotation.z = -.18;
+                box(group, .8, .15, .35, 1.68, 7.02, 0, M.white, false);
+            }
+
+            // Guard booth and canopy.
+            const GUARD_X = -33.5;
+            const GUARD_Z = 70.5;
+            const guard = new THREE.Group();
+            guard.position.set(GUARD_X, 0, GUARD_Z);
+            scene.add(guard);
+            registerCollider(GUARD_X, GUARD_Z, 5, 4.5, .45);
+            box(guard, 5, 3.2, 4.5, 0, 1.6, 0, M.wall);
+            box(guard, 4.5, 1.4, .1, 0, 2.1, 2.28, M.glass);
+            box(guard, .1, 1.4, 3.6, 2.53, 2.1, 0, M.glass);
+            hipRoof(guard, 1, 3.42, .2, 9, 6);
+            sign(guard, 'SECURITY', 1, 3.02, 3.25, 5.8, .78);
+            // Stainless pedestrian turnstiles under the extended guard-house roof.
+            for (const zz of [-1.05, 1.05]) {
+                box(guard, 1.15, .82, .72, 3.55, .43, zz, M.chrome);
+                cyl(guard, .11, .11, 1.15, 3.55, 1.3, zz, M.chrome, 10);
+                for (let arm = 0; arm < 3; arm++) {
+                    const angle = arm * Math.PI * 2 / 3;
+                    const endX = 3.55 + Math.cos(angle) * .7;
+                    const endZ = zz + Math.sin(angle) * .7;
+                    beam(guard, [3.55, 1.45, zz], [endX, 1.45, endZ], .055, M.chrome);
+                }
+            }
+            label('Gate / Security', GUARD_X, 6.3, GUARD_Z + 2, 18);
+            identify(guard, 'Gate / Security', 'ทางเข้าโรงงานและป้อมรักษาความปลอดภัย');
+
+            // Two photographed boom barriers span the same road on opposite sides.
+            // The guard booth sits immediately west of the road, not in its centre.
+            box(scene, .55, 1.5, .55, -27.4, .75, 71, M.yellow);
+            box(scene, 13.6, .13, .16, -20.6, 1.45, 71, M.white);
+            for (let x = -27.2; x < -14; x += 1.1) {
+                box(scene, .42, .15, .18, x, 1.45, 71, M.red, false);
+            }
+            box(scene, .55, 1.5, .55, -13.8, .75, 74.2, M.yellow);
+            box(scene, 13.6, .13, .16, -20.6, 1.45, 74.2, M.white);
+            for (let x = -27.2; x < -14; x += 1.1) box(scene, .42, .15, .18, x, 1.45, 74.2, M.red, false);
+            speedLimitSign(-7.8, 70.5, Math.PI);
+            trafficLight(-28.2, 69.8);
+            solarLamp(-9.5, 67, Math.PI);
+            solarLamp(-31.5, 67, Math.PI);
+
+            // Red/white curbs along the entrance edge shown in the ground-level photos.
+            for (let z = 19; z < 70; z += 2.4) {
+                box(scene, .48, .26, 2.35, 72.7, .13, z + 1.15, Math.round(z / 2.4) % 2 ? M.red : M.white, false);
+            }
+
+            // Sliding steel gate, guide rail and road edge paint.
+            box(scene, 25, .08, .16, -18.5, .06, 77.1, M.dark, false);
+            for (const offset of [-1, 1]) {
+                const gateX = offset < 0 ? -29.5 : -8.0;
+                const gate = new THREE.Group();
+                gate.position.set(gateX, 0, 76.8);
+                scene.add(gate);
+                box(gate, 8.5, .18, .18, 0, 2.65, 0, M.fence);
+                box(gate, 8.5, .18, .18, 0, .55, 0, M.fence);
+                box(gate, .2, 4.3, .2, -4.15, 2.45, 0, M.fence);
+                box(gate, .2, 4.3, .2, 4.15, 2.45, 0, M.fence);
+                for (let gx = -3.8; gx < 4; gx += .55) box(gate, .055, 3.8, .055, gx, 2.45, 0, M.fence, false);
+            }
+            stripBetween(scene, -30, 75.1, -7, 75.1, .14, .12, M.yellow, .05);
+            for (let x = -28; x < -8; x += 2.8) box(scene, 1.4, .025, .16, x, .12, 69.8, M.white, false);
+
+            // Parked delivery trucks (matching photo 3 - trucks at loading dock)
+            function deliveryTruck(x, z, rotY = 0, bodyColor = '#ecece4') {
+                const trk = new THREE.Group();
+                trk.position.set(x, 0, z);
+                trk.rotation.y = rotY;
+                scene.add(trk);
+                box(trk, 2.7, 3.3, 7.8, 0, 2.2, -.7, material(bodyColor));
+                box(trk, 2.65, 2.6, 2.5, 0, 1.8, 4.4, M.white);
+                box(trk, 2.2, .95, .08, 0, 2.35, 5.68, M.glass);
+                for (const xx of [-1.33, 1.33]) {
+                    for (const zz of [-3.3, 1.7, 4.4]) {
+                        const wheel = cyl(trk, .56, .56, .3, xx, .57, zz, M.rubber, 12);
+                        wheel.rotation.z = Math.PI / 2;
+                    }
+                }
+                return trk;
+            }
+            // Truck at central loading area
+            deliveryTruck(15, 1, 0);
+            // Trucks at Doke 2 loading dock (visible in photo 3)
+            deliveryTruck(35, -5, Math.PI / 2, '#f0f0e8');
+            deliveryTruck(50, -5, Math.PI / 2, '#e8e8e0');
+            // Large container truck parked at front (photo 4)
+            const containerTruck = new THREE.Group();
+            containerTruck.position.set(-5, 0, 25);
+            containerTruck.rotation.y = Math.PI * .5;
+            scene.add(containerTruck);
+            box(containerTruck, 2.8, 3.5, 12, 0, 2.25, 0, M.wall);
+            box(containerTruck, 2.6, 2.4, 2.5, 0, 1.7, 7.5, M.white);
+            box(containerTruck, 2.2, .9, .08, 0, 2.2, 8.78, M.glass);
+            for (const xx of [-1.38, 1.38]) {
+                for (const zz of [-4.5, 2, 7.5]) {
+                    const wh = cyl(containerTruck, .58, .58, .32, xx, .58, zz, M.rubber, 12);
+                    wh.rotation.z = Math.PI / 2;
+                }
+            }
+
+            // ------------------------------------------------------------
+            // Moving workers and forklifts add scale and activity
+            // ------------------------------------------------------------
+            const workers = [];
+            const movingForklifts = [];
+            let activityTime = 0;
+
+            function addNpcHealthBar(group) {
+                const canvas = document.createElement('canvas');
+                canvas.width = 128; canvas.height = 24;
+                const texture = new THREE.CanvasTexture(canvas);
+                texture.colorSpace = THREE.SRGBColorSpace;
+                const bar = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
+                bar.position.set(0, 4.45, 0);
+                bar.scale.set(1.75, .33, 1);
+                group.add(bar);
+                group.userData.healthCanvas = canvas;
+                group.userData.healthTexture = texture;
+                group.userData.healthBar = bar;
+                group.userData.health = 100;
+                group.userData.dead = false;
+                drawNpcHealthBar(group);
+            }
+
+            function drawNpcHealthBar(group) {
+                const canvas = group.userData.healthCanvas;
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                const amount = THREE.MathUtils.clamp(group.userData.health / 100, 0, 1);
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = '#101820dd'; ctx.fillRect(1, 3, 126, 18);
+                ctx.fillStyle = '#ffffff'; ctx.fillRect(2, 4, 124, 16);
+                ctx.fillStyle = amount > .5 ? '#38c172' : amount > .25 ? '#f5bd3d' : '#df4b4b';
+                ctx.fillRect(4, 6, 120 * amount, 12);
+                group.userData.healthTexture.needsUpdate = true;
+            }
+
+            function route(points, closed = true) {
+                return new THREE.CatmullRomCurve3(
+                    points.map(p => new THREE.Vector3(p[0], 0, p[1])), closed, 'catmullrom', .18
+                );
+            }
+
+            function worker(color = '#1677a8', helmet = '#f4d34a') {
+                const group = new THREE.Group();
+                group.scale.setScalar(.58);
+                box(group, .85, 1.45, .55, 0, 2.25, 0, material(color, .55, .05));
+                box(group, .9, .5, .08, 0, 2.35, .31, M.yellow, false);
+                const head = new THREE.Mesh(
+                    new THREE.SphereGeometry(.34, 12, 8), material('#d99e78', .65)
+                );
+                head.position.y = 3.32; head.castShadow = true; group.add(head);
+                const hardHat = new THREE.Mesh(
+                    new THREE.SphereGeometry(.38, 12, 7, 0, Math.PI * 2, 0, Math.PI * .55),
+                    material(helmet, .42, .1)
+                );
+                hardHat.position.y = 3.43; hardHat.castShadow = true; group.add(hardHat);
+                const arms = [];
+                const legs = [];
+                for (const side of [-1, 1]) {
+                    const arm = cyl(group, .105, .115, 1.2, side * .51, 2.2, 0, material('#d99e78', .65), 8);
+                    const leg = cyl(group, .13, .145, 1.35, side * .23, .78, 0, M.dark, 8);
+                    arms.push(arm); legs.push(leg);
+                }
+                group.userData = { arms, legs };
+                addNpcHealthBar(group);
+                group.traverse(node => { node.userData.npcRoot = group; });
+                scene.add(group);
+                return group;
+            }
+
+            function forklift(color = '#efb72d') {
+                const group = new THREE.Group();
+                box(group, 1.9, .7, 3.2, 0, .72, 0, material(color, .42, .22));
+                box(group, 1.82, 1.35, 1.35, 0, 1.45, -.72, material(color, .42, .22));
+                for (const x of [-.76, .76]) for (const z of [-1.08, .82]) {
+                    box(group, .11, 2.35, .11, x, 2.18, z, M.dark);
+                }
+                box(group, 1.72, .15, 1.55, 0, 3.35, -.25, M.dark);
+                for (const x of [-.58, .58]) box(group, .15, 3.45, .15, x, 2.05, 1.43, M.dark);
+                const carrier = new THREE.Group(); carrier.position.set(0, .62, 1.5); group.add(carrier);
+                box(carrier, 1.48, .18, .2, 0, .2, 0, M.dark);
+                box(carrier, .14, .12, 2.45, -.48, 0, 1.15, M.dark);
+                box(carrier, .14, .12, 2.45, .48, 0, 1.15, M.dark);
+                const wheels = [];
+                for (const x of [-1, 1]) for (const z of [-1.08, .9]) {
+                    const wheel = cyl(group, .38, .38, .27, x, .45, z, M.rubber, 12);
+                    wheel.rotation.z = Math.PI / 2; wheels.push(wheel);
+                }
+                box(group, .68, .88, .48, 0, 2.12, -.52, material('#187da8'));
+                const driverHead = new THREE.Mesh(new THREE.SphereGeometry(.27, 10, 8), material('#d99e78'));
+                driverHead.position.set(0, 2.82, -.52); group.add(driverHead);
+                const beaconMaterial = new THREE.MeshStandardMaterial({
+                    color: '#ffc83d', emissive: '#ff8a00', emissiveIntensity: 1.2, roughness: .3
+                });
+                const beacon = new THREE.Mesh(new THREE.SphereGeometry(.12, 8, 6), beaconMaterial);
+                beacon.position.set(0, 3.55, -.25); group.add(beacon);
+                group.userData = { carrier, wheels, beacon };
+                scene.add(group);
+                return group;
+            }
+
+            const workerRoutes = [
+                route([[-27, 74], [-24, 52], [-22, 25], [-20, 15], [-42, 16], [-58, 25], [-53, 50]]),
+                route([[-17, 8], [3, 9], [26, 10], [55, 9], [61, 17], [49, 17], [19, 16]]),
+                route([[-64, 54], [-52, 52], [-37, 51], [-34, 31], [-40, 20], [-60, 22]])
+            ];
+            for (let i = 0; i < 10; i++) {
+                const actor = {
+                    mesh: worker(['#1677a8', '#287b55', '#d7633f', '#7652a4'][i % 4], i % 3 ? '#f6f7f0' : '#f4d34a'),
+                    curve: workerRoutes[i % workerRoutes.length], phase: (i * .147) % 1, speed: .018 + (i % 3) * .003,
+                    dead: false
+                };
+                actor.mesh.userData.actor = actor;
+                workers.push(actor);
+            }
+
+            const forkliftRoutes = [
+                route([[64, -74], [66, -48], [66, -14], [64, 8], [67, 29], [68, 63], [63, 70], [61, 25]]),
+                route([[-17, 8], [5, 8], [27, 9], [54, 9], [59, 4], [34, 4], [8, 4], [-14, 4]])
+            ];
+            for (let i = 0; i < 2; i++) movingForklifts.push({
+                mesh: forklift(i ? '#ef9d2d' : '#efbd32'), curve: forkliftRoutes[i],
+                phase: i * .47, speed: i ? .010 : .008
+            });
+
+            function updateActivity(dt) {
+                activityTime += dt;
+                workers.forEach((actor, index) => {
+                    if (actor.dead) return;
+                    const t = (actor.phase + activityTime * actor.speed) % 1;
+                    const p = actor.curve.getPointAt(t);
+                    const tangent = actor.curve.getTangentAt(t);
+                    actor.mesh.position.copy(p);
+                    actor.mesh.rotation.y = Math.atan2(tangent.x, tangent.z);
+                    const step = Math.sin(activityTime * 8 + index * .7);
+                    actor.mesh.userData.arms[0].rotation.x = step * .72;
+                    actor.mesh.userData.arms[1].rotation.x = -step * .72;
+                    actor.mesh.userData.legs[0].rotation.x = -step * .72;
+                    actor.mesh.userData.legs[1].rotation.x = step * .72;
+                    actor.mesh.position.y = Math.abs(step) * .035;
+                });
+                movingForklifts.forEach((actor, index) => {
+                    const t = (actor.phase + activityTime * actor.speed) % 1;
+                    const p = actor.curve.getPointAt(t);
+                    const tangent = actor.curve.getTangentAt(t);
+                    actor.mesh.position.copy(p);
+                    actor.mesh.rotation.y = Math.atan2(tangent.x, tangent.z);
+                    actor.mesh.userData.wheels.forEach(w => w.rotation.x -= dt * 5);
+                    actor.mesh.userData.carrier.position.y = .62 + Math.sin(activityTime * .8 + index) * .11;
+                    actor.mesh.userData.beacon.material.emissiveIntensity = 1.1 + Math.sin(activityTime * 8 + index) * .8;
+                });
+            }
+
+            // ------------------------------------------------------------
+            // Playable third-person character / GTA-style controller
+            // ------------------------------------------------------------
+            const playerKeys = {};
+            let gameMode = false;
+            let playerHeading = Math.PI;
+            let gameCameraYaw = Math.PI;
+            let gameCameraPitch = .08;
+            let gameCameraDistance = 10.8;
+            let gameFirstPerson = GAME_CONFIG.firstPerson;
+            let playerWalkTime = 0;
+            let playerVerticalVelocity = 0;
+            let playerGrounded = true;
+            let jumpQueued = false;
+            let gameTouchLook = null;
+            let gameMouseLook = null;
+            let playerDropActive = false;
+            let playerHasSpawned = false;
+            let activeWeapon = 'unarmed';
+            let attackTime = 0;
+            let lastAttackAt = 0;
+            let aiming = false;
+            const weaponEffects = [];
+            const combatRaycaster = new THREE.Raycaster();
+
+            function playableCharacter() {
+                const group = new THREE.Group();
+                group.name = 'TDK Player';
+                const model = new THREE.Group();
+                model.scale.setScalar(.68);
+                group.add(model);
+                const torso = box(model, 1.02, 1.6, .64, 0, 2.42, 0, material('#0b78b8', .47, .08));
+                box(model, 1.07, .42, .08, 0, 2.6, .37, M.white, false);
+                const logo = new THREE.Mesh(
+                    new THREE.PlaneGeometry(.62, .22),
+                    new THREE.MeshBasicMaterial({ map: textTexture('TDK', { background: '#f7f8f4', color: '#0c5c9c', size: 72 }) })
+                );
+                logo.position.set(0, 2.62, .415); model.add(logo);
+                const belt = box(model, 1.07, .16, .68, 0, 1.67, 0, M.dark);
+                const head = new THREE.Mesh(new THREE.SphereGeometry(.41, 16, 12), material('#dfa47d', .66));
+                head.position.y = 3.62; head.castShadow = true; model.add(head);
+                const helmet = new THREE.Mesh(
+                    new THREE.SphereGeometry(.45, 16, 8, 0, Math.PI * 2, 0, Math.PI * .56),
+                    material('#f5f6ef', .34, .12)
+                );
+                helmet.position.y = 3.76; helmet.castShadow = true; model.add(helmet);
+                box(model, .82, .12, .12, 0, 3.83, .34, M.blue, false);
+                const arms = [];
+                const legs = [];
+                for (const side of [-1, 1]) {
+                    const arm = cyl(model, .12, .135, 1.36, side * .63, 2.38, 0, material('#dfa47d', .66), 9);
+                    const leg = cyl(model, .16, .17, 1.52, side * .27, .86, 0, M.dark, 10);
+                    arms.push(arm); legs.push(leg);
+                }
+
+                const weaponMount = new THREE.Group();
+                weaponMount.position.set(.62, 1.92, .2);
+                model.add(weaponMount);
+
+                const knife = new THREE.Group();
+                knife.name = 'Knife';
+                const knifeHandle = box(knife, .16, .48, .14, 0, .12, 0, material('#17212a', .42, .58));
+                const blade = box(knife, .11, .82, .055, 0, .76, 0, material('#dce8ec', .22, .8));
+                blade.rotation.z = -.08;
+                knife.rotation.x = -.35;
+                knife.visible = false;
+                weaponMount.add(knife);
+
+                const pistol = new THREE.Group();
+                pistol.name = 'Pistol';
+                box(pistol, .2, .3, .72, 0, .16, .3, material('#222b30', .32, .72));
+                const grip = box(pistol, .18, .5, .2, 0, -.18, .1, material('#11171b', .5, .45));
+                grip.rotation.x = -.2;
+                const muzzle = new THREE.Object3D();
+                muzzle.position.set(0, .16, .72);
+                pistol.add(muzzle);
+                const muzzleFlash = new THREE.Mesh(
+                    new THREE.SphereGeometry(.18, 7, 5),
+                    new THREE.MeshBasicMaterial({ color: '#ffd45c', transparent: true, opacity: .95 })
+                );
+                muzzleFlash.scale.set(1, 1, 2.4);
+                muzzleFlash.position.set(0, 0, .14);
+                muzzleFlash.visible = false;
+                muzzle.add(muzzleFlash);
+                pistol.rotation.x = -.14;
+                pistol.visible = false;
+                weaponMount.add(pistol);
+
+                group.userData = { torso, belt, arms, legs, model, weaponMount, knife, pistol, muzzle, muzzleFlash };
+                group.position.set(GAME_CONFIG.spawn.x, GAME_CONFIG.spawn.y, GAME_CONFIG.spawn.z);
+                group.rotation.y = playerHeading;
+                group.visible = false;
+                scene.add(group);
+                return group;
+            }
+
+            const player = playableCharacter();
+            const cameraCollisionRay = new THREE.Ray();
+            const firstPersonWeapon = new THREE.Group();
+            firstPersonWeapon.position.set(.46, -.43, -.82);
+            firstPersonWeapon.visible = false;
+            perspectiveCamera.add(firstPersonWeapon);
+            const viewKnife = new THREE.Group();
+            box(viewKnife, .075, .48, .06, .02, .03, 0, material('#161f26', .35, .65));
+            const viewBlade = box(viewKnife, .055, .72, .025, .02, .58, 0, material('#dfe8ea', .18, .86));
+            viewBlade.rotation.z = -.12;
+            viewKnife.rotation.set(.2, -.38, -.62);
+            firstPersonWeapon.add(viewKnife);
+            const viewPistol = new THREE.Group();
+            box(viewPistol, .16, .22, .58, 0, .13, 0, material('#1c252c', .32, .75));
+            const viewGrip = box(viewPistol, .14, .42, .16, 0, -.18, -.12, material('#0b1116', .48, .45));
+            viewGrip.rotation.x = -.18;
+            viewPistol.rotation.set(.05, -.25, -.12);
+            firstPersonWeapon.add(viewPistol);
+
+            function syncFirstPersonWeapon() {
+                firstPersonWeapon.visible = gameMode && gameFirstPerson && activeWeapon !== 'unarmed';
+                viewKnife.visible = activeWeapon === 'knife';
+                viewPistol.visible = activeWeapon === 'pistol';
+            }
+
+            function setGameView(firstPerson) {
+                gameFirstPerson = firstPerson;
+                player.visible = gameMode && !gameFirstPerson;
+                syncFirstPersonWeapon();
+                if (gameMode) {
+                    const label = gameFirstPerson ? 'First-person' : 'Third-person (เห็นตัวละคร)';
+                    const status = document.getElementById('game-status');
+                    status.textContent = `มุมมอง: ${label} · กด V เพื่อสลับมุมมอง`;
+                    status.classList.add('show');
+                    clearTimeout(setGameView.statusTimer);
+                    setGameView.statusTimer = setTimeout(() => {
+                        if (gameMode && document.pointerLockElement === renderer.domElement) status.classList.remove('show');
+                    }, 1500);
+                }
+            }
+
+            function clearPlayerInput() {
+                Object.keys(playerKeys).forEach(key => playerKeys[key] = false);
+                jumpQueued = false;
+            }
+
+            function spawnPlayerFromSky() {
+                player.position.set(GAME_CONFIG.spawn.x, GAME_CONFIG.spawn.y, GAME_CONFIG.spawn.z);
+                playerVerticalVelocity = 0;
+                playerGrounded = false;
+                playerDropActive = true;
+                playerHasSpawned = true;
+            }
+
+            function selectWeapon(name) {
+                if (!['unarmed', 'knife', 'pistol'].includes(name)) return;
+                activeWeapon = name;
+                player.userData.knife.visible = name === 'knife';
+                player.userData.pistol.visible = name === 'pistol';
+                syncFirstPersonWeapon();
+                document.querySelectorAll('.weapon-slot').forEach(slot => {
+                    slot.classList.toggle('active', slot.dataset.weapon === name);
+                });
+                const names = { unarmed: 'มือเปล่า', knife: 'มีด', pistol: 'ปืน' };
+                const status = document.getElementById('game-status');
+                status.textContent = `เลือก: ${names[name]}`;
+                status.classList.add('show');
+                clearTimeout(selectWeapon.statusTimer);
+                selectWeapon.statusTimer = setTimeout(() => {
+                    if (gameMode && document.pointerLockElement === renderer.domElement) status.classList.remove('show');
+                }, 900);
+            }
+
+            document.querySelectorAll('.weapon-slot').forEach(slot => {
+                slot.addEventListener('click', () => {
+                    if (gameMode) selectWeapon(slot.dataset.weapon);
+                });
+            });
+
+            function isPlayerPart(object) {
+                for (let node = object; node; node = node.parent) if (node === player) return true;
+                return false;
+            }
+
+            function npcFromObject(object) {
+                for (let node = object; node; node = node.parent) {
+                    if (node.userData?.npcRoot) return node.userData.npcRoot;
+                }
+                return null;
+            }
+
+            function damageNpc(npc, amount) {
+                if (!npc || npc.userData.dead) return;
+                npc.userData.health = Math.max(0, npc.userData.health - amount);
+                drawNpcHealthBar(npc);
+                npc.userData.healthBar.material.color.set(npc.userData.health > 0 ? '#ffffff' : '#777777');
+                if (npc.userData.health > 0) return;
+                npc.userData.dead = true;
+                npc.userData.actor.dead = true;
+                npc.userData.healthBar.visible = false;
+                npc.rotation.z = Math.PI / 2;
+                npc.position.y = .18;
+                document.getElementById('game-status').textContent = 'NPC ถูกกำจัดแล้ว';
+                document.getElementById('game-status').classList.add('show');
+            }
+
+            function damageNpcInFront(range, amount) {
+                const direction = new THREE.Vector3();
+                camera.getWorldDirection(direction);
+                // NPC health bars are Sprites. Three.js requires the active camera
+                // on a raycaster before a Sprite can be intersected safely.
+                combatRaycaster.camera = camera;
+                combatRaycaster.set(camera.position, direction);
+                combatRaycaster.far = range;
+                const hit = combatRaycaster.intersectObjects(scene.children, true)
+                    .find(result => !isPlayerPart(result.object) && result.object.visible && result.distance > .25);
+                if (hit) damageNpc(npcFromObject(hit.object), amount);
+            }
+
+            function addShotEffect() {
+                const muzzle = new THREE.Vector3();
+                player.userData.muzzle.getWorldPosition(muzzle);
+                const direction = new THREE.Vector3();
+                camera.getWorldDirection(direction);
+                combatRaycaster.camera = camera;
+                combatRaycaster.set(camera.position, direction);
+                combatRaycaster.far = 120;
+                const hit = combatRaycaster.intersectObjects(scene.children, true)
+                    .find(result => !isPlayerPart(result.object) && result.object.visible &&
+                        result.object.type !== 'Line' && result.distance > 1.5);
+                if (hit) damageNpc(npcFromObject(hit.object), GAME_CONFIG.weaponDamage.pistol);
+                const end = hit ? hit.point.clone() : camera.position.clone().add(direction.multiplyScalar(120));
+                const geometry = new THREE.BufferGeometry().setFromPoints([muzzle, end]);
+                const tracer = new THREE.Line(
+                    geometry,
+                    new THREE.LineBasicMaterial({ color: '#ffe78a', transparent: true, opacity: .95 })
+                );
+                scene.add(tracer);
+                const spark = new THREE.Mesh(
+                    new THREE.SphereGeometry(.12, 6, 4),
+                    new THREE.MeshBasicMaterial({ color: '#ffb331', transparent: true, opacity: .95 })
+                );
+                spark.position.copy(end);
+                scene.add(spark);
+                weaponEffects.push({ tracer, spark, life: .095 });
+            }
+
+            function performAttack() {
+                if (!gameMode) return;
+                const now = performance.now() / 1000;
+                const delay = activeWeapon === 'pistol' ? .2 : activeWeapon === 'knife' ? .42 : .32;
+                if (now - lastAttackAt < delay) return;
+                lastAttackAt = now;
+                attackTime = activeWeapon === 'pistol' ? .16 : .34;
+                if (activeWeapon === 'pistol') {
+                    player.userData.muzzleFlash.visible = true;
+                    addShotEffect();
+                } else {
+                    damageNpcInFront(
+                        GAME_CONFIG.weaponRange[activeWeapon],
+                        GAME_CONFIG.weaponDamage[activeWeapon]
+                    );
+                }
+            }
+
+            function updateWeaponEffects(dt) {
+                for (let i = weaponEffects.length - 1; i >= 0; i--) {
+                    const fx = weaponEffects[i];
+                    fx.life -= dt;
+                    fx.tracer.material.opacity = Math.max(0, fx.life * 10);
+                    fx.spark.material.opacity = Math.max(0, fx.life * 10);
+                    fx.spark.scale.multiplyScalar(.94);
+                    if (fx.life <= 0) {
+                        scene.remove(fx.tracer, fx.spark);
+                        fx.tracer.geometry.dispose();
+                        fx.tracer.material.dispose();
+                        fx.spark.geometry.dispose();
+                        fx.spark.material.dispose();
+                        weaponEffects.splice(i, 1);
+                    }
+                }
+            }
+
+            function playerBlocked(x, z) {
+                const radius = GAME_CONFIG.playerRadius;
+                const b = SITE.renderBounds;
+                if (x < b.minX + 2 + radius || x > b.maxX - 2 - radius ||
+                    z < b.rearZ + 2 + radius || z > b.entranceZ - 1 - radius) return true;
+                if (staticColliders.some(c =>
+                    x + radius > c.minX && x - radius < c.maxX && z + radius > c.minZ && z - radius < c.maxZ
+                )) return true;
+                return [...editableObjects.values()].some(group => {
+                    if (!group.userData.editor?.collidable) return false;
+                    const box = group.userData.editorBounds;
+                    return box && x + radius > box.min.x && x - radius < box.max.x &&
+                        z + radius > box.min.z && z - radius < box.max.z;
+                });
+            }
+
+            function updatePlayer(dt) {
+                if (!gameMode) return;
+                const { forward, strafe } = getMovementInput(playerKeys);
+                const running = playerKeys.ShiftLeft || playerKeys.ShiftRight;
+                const speed = running ? GAME_CONFIG.runSpeed : GAME_CONFIG.walkSpeed;
+                const { x: dx, z: dz } = movementDelta({
+                    forward, strafe, yaw: gameCameraYaw, speed, dt
+                });
+
+                // Resolve each axis independently so the character slides along walls.
+                if (!playerBlocked(player.position.x + dx, player.position.z)) player.position.x += dx;
+                if (!playerBlocked(player.position.x, player.position.z + dz)) player.position.z += dz;
+                playerHeading = gameCameraYaw;
+                player.rotation.y = playerHeading;
+
+                if (jumpQueued && playerGrounded) {
+                    playerVerticalVelocity = GAME_CONFIG.jumpVelocity;
+                    playerGrounded = false;
+                }
+                jumpQueued = false;
+                playerVerticalVelocity -= GAME_CONFIG.gravity * dt;
+                player.position.y += playerVerticalVelocity * dt;
+                if (player.position.y <= 0) {
+                    player.position.y = 0;
+                    playerVerticalVelocity = 0;
+                    playerGrounded = true;
+                    if (playerDropActive) {
+                        playerDropActive = false;
+                        const status = document.getElementById('game-status');
+                        status.textContent = 'ลงถึงจุดกลางแผนที่แล้ว · กดเมาส์ขวาค้างแล้วลากเพื่อหมุนมุมมอง';
+                        status.classList.add('show');
+                    }
+                }
+
+                const moving = Math.abs(forward) + Math.abs(strafe) > .05;
+                const model = player.userData.model;
+                if (moving && playerGrounded) {
+                    playerWalkTime += dt * (running ? 13 : 8);
+                    const stride = Math.sin(playerWalkTime);
+                    player.userData.arms[0].rotation.x = stride * .78;
+                    player.userData.arms[1].rotation.x = -stride * .78;
+                    player.userData.legs[0].rotation.x = -stride * .82;
+                    player.userData.legs[1].rotation.x = stride * .82;
+                    model.position.y = Math.abs(Math.sin(playerWalkTime * 2)) * .055;
+                } else {
+                    player.userData.arms.forEach(limb => limb.rotation.x *= .78);
+                    player.userData.legs.forEach(limb => limb.rotation.x *= .78);
+                    model.position.y *= .72;
+                }
+
+                attackTime = Math.max(0, attackTime - dt);
+                const attackPhase = attackTime > 0 ? Math.sin((attackTime / (activeWeapon === 'pistol' ? .16 : .34)) * Math.PI) : 0;
+                if (activeWeapon === 'knife') {
+                    player.userData.arms[1].rotation.x = -1.05 - attackPhase * 1.55;
+                    player.userData.arms[1].rotation.z = -.25 - attackPhase * .65;
+                    player.userData.weaponMount.rotation.z = -attackPhase * 1.05;
+                } else if (activeWeapon === 'pistol') {
+                    player.userData.arms[1].rotation.x = -1.25 - attackPhase * .18;
+                    player.userData.arms[0].rotation.x = -.72;
+                    player.userData.weaponMount.position.z = .2 - attackPhase * .16;
+                } else if (attackTime > 0) {
+                    player.userData.arms[1].rotation.x = -attackPhase * 1.65;
+                }
+                if (activeWeapon !== 'knife') {
+                    player.userData.arms[1].rotation.z *= .76;
+                    player.userData.weaponMount.rotation.z *= .72;
+                }
+                if (activeWeapon !== 'pistol') player.userData.weaponMount.position.z += (.2 - player.userData.weaponMount.position.z) * .25;
+                player.userData.muzzleFlash.visible = activeWeapon === 'pistol' && attackTime > .105;
+                if (playerKeys.Mouse0) performAttack();
+                updateWeaponEffects(dt);
+
+                const cameraOrigin = player.position.clone().add(new THREE.Vector3(0, GAME_CONFIG.eyeHeight, 0));
+                const lookDirection = new THREE.Vector3(
+                    Math.sin(gameCameraYaw) * Math.cos(gameCameraPitch),
+                    Math.sin(gameCameraPitch),
+                    Math.cos(gameCameraYaw) * Math.cos(gameCameraPitch)
+                );
+                if (gameFirstPerson) {
+                    camera.position.copy(cameraOrigin);
+                    camera.lookAt(cameraOrigin.clone().add(lookDirection));
+                    return;
+                }
+                const followDistance = aiming && activeWeapon === 'pistol' ? 6.4 : gameCameraDistance;
+                const horizontalDistance = Math.cos(gameCameraPitch) * followDistance;
+                const desiredCamera = new THREE.Vector3(
+                    -Math.sin(gameCameraYaw) * horizontalDistance,
+                    2.55 + Math.sin(gameCameraPitch) * followDistance,
+                    -Math.cos(gameCameraYaw) * horizontalDistance
+                ).add(player.position);
+                const cameraVector = desiredCamera.clone().sub(cameraOrigin);
+                const cameraDistance = cameraVector.length();
+                cameraCollisionRay.set(cameraOrigin, cameraVector.normalize());
+                let nearestCameraHit = cameraDistance;
+                const cameraHitPoint = new THREE.Vector3();
+                staticColliders.forEach(collider => {
+                    const hit = cameraCollisionRay.intersectBox(collider.cameraBox, cameraHitPoint);
+                    if (hit) {
+                        const distance = hit.distanceTo(cameraOrigin);
+                        if (distance > .4 && distance < nearestCameraHit) nearestCameraHit = distance;
+                    }
+                });
+                editableObjects.forEach(group => {
+                    if (!group.userData.editor?.collidable) return;
+                    const hit = cameraCollisionRay.intersectBox(group.userData.editorBounds, cameraHitPoint);
+                    if (hit) {
+                        const distance = hit.distanceTo(cameraOrigin);
+                        if (distance > .4 && distance < nearestCameraHit) nearestCameraHit = distance;
+                    }
+                });
+                if (nearestCameraHit < cameraDistance) {
+                    desiredCamera.copy(cameraOrigin).add(
+                        cameraVector.multiplyScalar(Math.max(1.8, nearestCameraHit - .7))
+                    );
+                }
+                const followStrength = 1 - Math.pow(.0015, dt);
+                camera.position.lerp(desiredCamera, followStrength);
+                const lookAt = player.position.clone().add(new THREE.Vector3(
+                    Math.sin(gameCameraYaw) * (aiming ? 9 : 3.8), 2.25,
+                    Math.cos(gameCameraYaw) * (aiming ? 9 : 3.8)
+                ));
+                camera.lookAt(lookAt);
+            }
+
+            function setGameMode(enabled) {
+                if (enabled && editorMode) setEditorMode(false);
+                if (enabled && camera !== perspectiveCamera) {
+                    setActiveCamera(perspectiveCamera);
+                    controls.enableRotate = true;
+                }
+                gameMode = enabled;
+                player.visible = enabled && !gameFirstPerson;
+                syncFirstPersonWeapon();
+                controls.enabled = !enabled;
+                controls.autoRotate = false;
+                transition = null;
+                document.getElementById('rotate').checked = false;
+                document.body.classList.toggle('game-active', enabled);
+                document.getElementById('game-hud').classList.toggle('show', enabled);
+                document.getElementById('crosshair').classList.toggle('show', enabled);
+                document.getElementById('weapon-hud').classList.toggle('show', enabled);
+                document.getElementById('game-pad').classList.toggle('show', enabled && innerWidth <= 900);
+                const button = document.getElementById('game-toggle');
+                button.classList.toggle('active', enabled);
+                button.textContent = enabled ? '✕ ออกจากโหมดเดิน' : '🎮 เข้าโหมดเดินในแมพ';
+                if (enabled) {
+                    if (!playerHasSpawned) spawnPlayerFromSky();
+                    if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+                    gameCameraYaw = playerHeading;
+                    gameCameraPitch = .08;
+                    gameCameraDistance = 10.8;
+                    camera.position.set(player.position.x, 7.2, player.position.z + 11);
+                    camera.lookAt(player.position.x, 2.5, player.position.z - 3);
+                    document.getElementById('info-title').textContent = 'โหมดเกม — เดินสำรวจโรงงาน';
+                    document.getElementById('info-text').textContent = 'คลิกฉากเพื่อจับเมาส์ · WASD เดิน · Space กระโดด · Shift วิ่ง · V สลับมุมมอง (เห็นตัวละคร) · 1/2/3 เลือกมือเปล่า/มีด/ปืน · คลิกซ้ายโจมตี · Esc ออก';
+                    document.getElementById('game-status').textContent = 'ตัวละครกำลังลงสู่จุดกลางแผนที่ · กดเมาส์ขวาค้างแล้วลากเพื่อหมุนมุมมอง';
+                    document.getElementById('game-status').classList.add('show');
+                    renderer.domElement.focus();
+                } else {
+                    if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+                    clearPlayerInput();
+                    gameTouchLook = null;
+                    gameMouseLook = null;
+                    aiming = false;
+                    controls.target.copy(player.position).setY(2.2);
+                    controls.enabled = true;
+                    document.getElementById('game-status').classList.remove('show');
+                    document.getElementById('info-title').textContent = 'TDK Industrial — Factory Campus';
+                    document.getElementById('info-text').textContent = 'กลับสู่โหมดสำรวจด้วยเมาส์แล้ว';
+                }
+            }
+
+            renderer.domElement.addEventListener('wheel', event => {
+                if (!gameMode) return;
+                event.preventDefault();
+                gameCameraDistance = THREE.MathUtils.clamp(gameCameraDistance + event.deltaY * .012, 4.6, 16);
+            }, { passive: false });
+
+            // ------------------------------------------------------------
+            // Trees, palms, gardens and boundary walls
+            // ------------------------------------------------------------
+            const leafGeo = new THREE.IcosahedronGeometry(1, 1);
+
+            function tree(x, z, size = 1) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+                scene.add(group);
+                cyl(group, .13 * size, .23 * size, 2.8 * size, 0, 1.4 * size, 0, M.trunk, 7);
+                for (let i = 0; i < 4; i++) {
+                    const leaf = new THREE.Mesh(leafGeo, M.foliage[Math.floor(rand() * 4)]);
+                    leaf.position.set(
+                        (rand() - .5) * 1.8 * size,
+                        (2.9 + rand() * 1.2) * size,
+                        (rand() - .5) * 1.8 * size
+                    );
+                    leaf.scale.set(
+                        (1.2 + rand() * .6) * size,
+                        (1.6 + rand() * .6) * size,
+                        (1.2 + rand() * .6) * size
+                    );
+                    leaf.castShadow = true;
+                    leaf.receiveShadow = true;
+                    group.add(leaf);
+                }
+            }
+
+            function palm(x, z, s = 1) {
+                cyl(scene, .1 * s, .21 * s, 5.5 * s, x, 2.75 * s, z, M.trunk, 8);
+                for (let i = 0; i < 8; i++) {
+                    const angle = i * Math.PI / 4 + rand() * .15;
+                    const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+                    const start = new THREE.Vector3(x, 5.45 * s, z);
+                    const mid = start.clone().addScaledVector(dir, 1.25 * s);
+                    mid.y += .7 * s;
+                    const tip = start.clone().addScaledVector(dir, 2.7 * s);
+                    tip.y -= .65 * s;
+                    const side = new THREE.Vector3(-dir.z, 0, dir.x).multiplyScalar(.38 * s);
+                    const p1 = mid.clone().add(side);
+                    const p2 = mid.clone().sub(side);
+                    const geometry = new THREE.BufferGeometry();
+                    geometry.setAttribute('position', new THREE.Float32BufferAttribute([
+                        ...start.toArray(), ...p1.toArray(), ...tip.toArray(),
+                        ...start.toArray(), ...tip.toArray(), ...p2.toArray()
+                    ], 3));
+                    geometry.computeVertexNormals();
+                    const mat = new THREE.MeshStandardMaterial({
+                        color: i % 2 ? '#467a3e' : '#588b45',
+                        side: THREE.DoubleSide, roughness: 1
+                    });
+                    const leaf = new THREE.Mesh(geometry, mat);
+                    leaf.castShadow = true;
+                    scene.add(leaf);
+                    beam(scene, start.toArray(), mid.toArray(), .025 * s, M.trunk);
+                }
+            }
+
+            // Front-right green strip.
+            box(scene, 48, .12, 6, 43, .08, 73, M.foliage[1], false);
+            for (let x = 22; x < 68; x += 5.7) {
+                box(scene, 3.7, .6, 1.25, x, .42, 74, M.foliage[0]);
+            }
+
+            // Landscaping beside the central walkway.
+            VEGETATION.entryPalms.forEach(([x, z, size]) => {
+                const rx = toRender(x), rz = toRender(z), rs = toRender(size);
+                box(scene, 2.4, .25, 2.4, rx, .15, rz, M.curb);
+                box(scene, 2, .15, 2, rx, .3, rz, M.foliage[1], false);
+                palm(rx, rz, rs);
+            });
+            for (let x = -13; x < 9; x += 5.8) palm(x, -4, .77);
+
+            // Boundary walls with slim fence bars.
+            function boundary(x1, z1, x2, z2) {
+                const length = Math.hypot(x2 - x1, z2 - z1);
+                const group = new THREE.Group();
+                group.position.set((x1 + x2) / 2, 0, (z1 + z2) / 2);
+                group.rotation.y = -Math.atan2(z2 - z1, x2 - x1);
+                scene.add(group);
+                box(group, length, .75, .3, 0, .375, 0, M.base);
+                for (let x = -length / 2; x <= length / 2; x += 3.5) {
+                    box(group, .2, 2.6, .22, x, 1.3, 0, M.fence);
+                }
+                for (const y of [1.1, 2.3]) {
+                    box(group, length, .06, .06, 0, y, 0, M.fence, false);
+                }
+                for (let x = -length / 2; x < length / 2; x += .65) {
+                    box(group, .035, 1.35, .035, x, 1.65, 0, M.fence, false);
+                }
+            }
+            FENCES.forEach(segment => boundary(...segment.map(toRender)));
+
+            // Tall narrow trees along the left boundary.
+            for (let z = -70; z < 62; z += toRender(VEGETATION.rearTreeSpacing)) tree(-81, z, 1.45 + rand() * .35);
+            for (let z = -77; z < 78; z += toRender(VEGETATION.boundaryTreeSpacing)) tree(82, z, 1 + rand() * .45);
+            for (let x = -75; x < 85; x += toRender(VEGETATION.rearTreeSpacing)) tree(x, -94, 1.5 + rand() * .6);
+
+            // Agricultural surroundings.
+            for (let row = 0; row < 6; row++) {
+                for (let col = 0; col < 16; col++) {
+                    tree(-145 + col * 17 + (rand() - .5) * 5, -111 - row * 15, 1.1 + rand() * .8);
+                }
+            }
+            for (let i = 0; i < 45; i++) {
+                tree(-95 - rand() * 65, -85 + rand() * 150, .85 + rand() * 1.3);
+            }
+
+            // Utility poles and lamps.
+            for (const z of [16, 43, 68]) {
+                cyl(scene, .11, .16, 9.4, 73, 4.7, z, M.base, 8);
+                box(scene, 3, .12, .14, 73, 8.7, z, M.dark);
+                for (const x of [72, 73, 74]) {
+                    cyl(scene, .09, .09, .3, x, 8.95, z, M.frame, 8);
+                }
+            }
+            for (const z of [17, 51]) {
+                cyl(scene, .07, .1, 7, -17, 3.5, z, M.frame, 8);
+                beam(scene, [-17, 6.8, z], [-15.4, 7, z], .065, M.frame);
+                box(scene, .8, .12, .4, -15.35, 7, z, M.white);
+            }
+
+            // Low-poly forested hills establish the photographed site context without external assets.
+            const hillMaterial = material('#789069', 1, 0);
+            for (const hill of [[-80, -155, 82, 24], [4, -177, 110, 30], [96, -150, 76, 22]]) {
+                const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 10, 0, Math.PI * 2, 0, Math.PI * .5), hillMaterial);
+                mesh.position.set(hill[0], -.5, hill[1]);
+                mesh.scale.set(hill[2], hill[3], hill[2] * .5);
+                mesh.receiveShadow = true;
+                scene.add(mesh);
+            }
+
+            // Inspection layer: coordinates, proportional grid, footprint edges and IDs.
+            const debugGroup = new THREE.Group();
+            debugGroup.name = 'Debug layout';
+            debugGroup.visible = false;
+            scene.add(debugGroup);
+            const grid = new THREE.GridHelper(170, 34, '#ffb42b', '#5b7687');
+            grid.position.y = .24;
+            debugGroup.add(grid);
+            const axes = new THREE.AxesHelper(25);
+            axes.position.set(0, .3, 75);
+            debugGroup.add(axes);
+            const debugLineMaterial = new THREE.LineBasicMaterial({ color: '#ff9f1c', depthTest: false });
+            const confidenceColors = { high: '#164e36', medium: '#765514', low: '#782727' };
+            BUILDINGS.forEach(item => {
+                const shape = new THREE.BoxGeometry(toRender(item.size.width), .12, toRender(item.size.depth));
+                const edge = new THREE.LineSegments(new THREE.EdgesGeometry(shape), debugLineMaterial);
+                edge.position.set(toRender(item.position.x), .36, toRender(item.position.z));
+                edge.rotation.y = item.rotationY;
+                edge.renderOrder = 20;
+                debugGroup.add(edge);
+                const marker = new THREE.Sprite(new THREE.SpriteMaterial({
+                    map: textTexture(`${item.id} · ${item.confidence.toUpperCase()}`, {
+                        background: confidenceColors[item.confidence] || '#102439', color: '#ffffff', size: 52
+                    }),
+                    depthTest: false, depthWrite: false
+                }));
+                marker.position.set(
+                    toRender(item.position.x),
+                    toRender(item.size.height + item.roof.rise) + 1.3,
+                    toRender(item.position.z)
+                );
+                marker.scale.set(15, 2.35, 1);
+                marker.renderOrder = 21;
+                debugGroup.add(marker);
+            });
+
+            // ------------------------------------------------------------
+            // In-page object editor (move / rotate / add / duplicate / delete)
+            // ------------------------------------------------------------
+            let editorMode = false;
+            let selectedEditable = null;
+            const selectedEditables = new Set();
+            const selectionPivot = new THREE.Group();
+            const selectionHighlightGroup = new THREE.Group();
+            const editorUndoStack = [];
+            const editorRedoStack = [];
+            let editorTransformBefore = null;
+            let editorSaveTimer = 0;
+            let editorTransformPointerActive = false;
+            const editorPanel = document.getElementById('editor-panel');
+            const editorToggle = document.getElementById('editor-toggle');
+            const editorSelected = document.getElementById('editor-selected');
+            const editorStatus = document.getElementById('editor-status');
+            const editorX = document.getElementById('editor-x');
+            const editorZ = document.getElementById('editor-z');
+            const editorY = document.getElementById('editor-y');
+            const editorScales = ['x','y','z'].map(axis => document.getElementById(`editor-s${axis}`));
+            const editorName = document.getElementById('editor-name');
+            const editorAngle = document.getElementById('editor-angle');
+            const editorMarquee = document.createElement('div');
+            editorMarquee.className = 'editor-marquee';
+            document.body.append(editorMarquee);
+            let editorBoxSelection = null;
+
+            const transformControls = new TransformControls(camera, renderer.domElement);
+            transformControls.setMode('translate');
+            transformControls.setTranslationSnap(.25);
+            transformControls.setScaleSnap(.05);
+            transformControls.setRotationSnap(THREE.MathUtils.degToRad(5));
+            transformControls.showY = false;
+            const transformHelper = transformControls.getHelper();
+            scene.add(transformHelper);
+
+            function firstObjectInfo(root) {
+                let info = null;
+                root.traverse(obj => {
+                    if (!info && obj.userData?.info) info = obj.userData.info;
+                });
+                return info;
+            }
+
+            function objectIdToken(value) {
+                return String(value || 'object')
+                    .normalize('NFKD').toLowerCase()
+                    .replace(/[^a-z0-9]+/g, '-')
+                    .replace(/^-+|-+$/g, '') || 'object';
+            }
+
+            function registerEverySceneObject() {
+                const runtimeObjects = new Set([
+                    labelGroup, debugGroup, player, transformHelper,
+                    ...workers.map(actor => actor.mesh),
+                    ...movingForklifts.map(actor => actor.mesh)
+                ]);
+                const idCounts = new Map();
+                const sceneObjects = [...scene.children];
+                let registered = 0;
+                sceneObjects.forEach((child, index) => {
+                    if (child.userData?.editor || runtimeObjects.has(child) || child.isLight || child.isCamera) return;
+                    if (!(child.isMesh || child.isGroup || child.isLine || child.isLineSegments || child.isSprite)) return;
+                    const bounds = new THREE.Box3().setFromObject(child);
+                    if (bounds.isEmpty()) return;
+                    const size = bounds.getSize(new THREE.Vector3());
+                    const info = firstObjectInfo(child);
+                    const title = info?.title || child.name || `${child.type} ${index + 1}`;
+                    const descriptor = [
+                        objectIdToken(title),
+                        child.position.x.toFixed(2), child.position.z.toFixed(2),
+                        size.x.toFixed(2), size.y.toFixed(2), size.z.toFixed(2)
+                    ].join('-').replace(/\./g, 'p').replace(/-/g, 'm');
+                    const count = (idCounts.get(descriptor) || 0) + 1;
+                    idCounts.set(descriptor, count);
+                    const id = `scene-${descriptor}-${count}`;
+                    // Only semantic scene groups become gameplay blockers.  The old
+                    // size-only rule turned curbs, lane paint, roof details and
+                    // other loose meshes into invisible walls for the player.
+                    const collidable = child.isGroup && size.y > 1.2 && bounds.min.y < 2.6 &&
+                        size.x * size.z > 1.5 && size.x * size.z < 6500;
+                    registerEditable(child, {
+                        id, type: 'sceneObject', label: title, builtin: true, collidable
+                    });
+                    registered++;
+                });
+                // Every blocker is now represented by a live object-space bounding box.
+                // Clearing the old fixed boxes prevents invisible collisions after a move/delete.
+                staticColliders.length = 0;
+                window.TDK_OBJECT_EDITOR = { editableObjects, registered };
+            }
+
+            // Stable building IDs allow selection and saved clones to survive decorative scene changes.
+            for (const item of BUILDINGS) {
+                const group = warehouseGroups[item.id] || (item.id === 'main_office' ? office : canteen);
+                registerEditable(group, { id: `building-${item.id}`, type: 'sceneObject', label: item.name });
+            }
+            registerEverySceneObject();
+            selectionPivot.name = 'Editor multi-selection pivot';
+            selectionHighlightGroup.name = 'Editor selection highlights';
+            scene.add(selectionPivot, selectionHighlightGroup);
+
+            function editorLabel(type) {
+                return {
+                    blueCrate: 'ลังสีน้ำเงิน', blueCabinet: 'ตู้สีน้ำเงิน',
+                    snackBooth: 'กล่อง/ร้านขนม', pavilion: 'ศาลาพักผ่อน',
+                    waterTank: 'ถังน้ำสีน้ำเงิน', blueContainer: 'ตู้คอนเทนเนอร์สีน้ำเงิน', building: 'อาคารโรงงาน'
+                }[type] || 'วัตถุ';
+            }
+
+            function createEditorObject(type, id = '', position = null, builtin = false, sourceId = null) {
+                const objectId = id || `custom-${type}-${++editorSequence}`;
+                const point = position || new THREE.Vector3(controls.target.x + 2, 0, controls.target.z + 2);
+                let group;
+                if (type === 'sceneObject' && sourceId && builtinTemplates.has(sourceId)) {
+                    group = cloneEditorGroup(builtinTemplates.get(sourceId));
+                    group.position.copy(point);
+                    scene.add(group);
+                } else if (type === 'building') {
+                    group = warehouse({ id: objectId, name: 'อาคารโรงงาน', labelText: '', x: point.x, z: point.z,
+                        w: 18, d: 24, h: 8, rise: 2, vent: false, rotationY: 0, skylightPattern: 'sparse',
+                        facade: { type: 'store', loadingDoors: 1 }, evidence: [] });
+                } else if (type === 'pavilion') group = woodenPavilion(point.x, point.z, 5.5, 4.5, 3.2);
+                else if (type === 'waterTank') group = waterTank(point.x, point.z, .7, 1.8);
+                else if (type === 'snackBooth') group = snackBooth(point.x, point.z);
+                else if (type === 'blueContainer') group = blueContainerBooth(point.x, point.z);
+                else if (type === 'blueCabinet') group = blueCabinet(point.x, point.z);
+                else group = blueCrate(point.x, point.z);
+                return registerEditable(group, {
+                    id: objectId, type, label: `${editorLabel(type)} ${objectId.split('-').at(-1)}`, builtin, sourceId
+                });
+            }
+
+            const addedIds = storedEditorLayout.added.map(item => item.id || item);
+            editorSequence = Math.max(0, ...addedIds.map(id => Number(String(id).split('-').at(-1)) || 0));
+            storedEditorLayout.added.forEach(item => {
+                const entry = typeof item === 'string'
+                    ? { id: item, type: storedEditorLayout.objects?.[item]?.type || 'blueCrate' }
+                    : item;
+                if (!entry.id || editableObjects.has(entry.id)) return;
+                createEditorObject(entry.type || 'blueCrate', entry.id, new THREE.Vector3(), false, entry.sourceId);
+            });
+
+            function serializeTransform(group) {
+                group.updateWorldMatrix(true, false);
+                const worldPosition = new THREE.Vector3();
+                const worldQuaternion = new THREE.Quaternion();
+                const worldScale = new THREE.Vector3();
+                group.matrixWorld.decompose(worldPosition, worldQuaternion, worldScale);
+                const worldRotation = new THREE.Euler().setFromQuaternion(worldQuaternion, 'XYZ');
+                return {
+                    type: group.userData.editor.type,
+                    label: group.userData.editor.label,
+                    position: { x: worldPosition.x, y: worldPosition.y, z: worldPosition.z },
+                    rotation: { x: worldRotation.x, y: worldRotation.y, z: worldRotation.z },
+                    scale: { x: worldScale.x, y: worldScale.y, z: worldScale.z }
+                };
+            }
+
+            function saveEditorLayout(message = 'บันทึกตำแหน่งแล้ว') {
+                const objects = {};
+                const added = [];
+                editableObjects.forEach((group, id) => {
+                    objects[id] = serializeTransform(group);
+                    if (!group.userData.editor.builtin) added.push({ id, type: group.userData.editor.type, sourceId: group.userData.editor.sourceId });
+                });
+                const state = { revision: EDITOR_LAYOUT_REVISION, objects, added, deleted: [...deletedBuiltinObjects] };
+                try { localStorage.setItem(EDITOR_STORAGE_KEY, JSON.stringify(state)); }
+                catch (error) { editorStatus.textContent = 'บันทึกไม่สำเร็จ กรุณาส่งออก JSON เพื่อเก็บงาน'; return state; }
+                storedEditorLayout = state;
+                editorStatus.textContent = message;
+                refreshObjectList();
+                return state;
+            }
+
+            function scheduleEditorSave() {
+                clearTimeout(editorSaveTimer);
+                editorSaveTimer = setTimeout(() => saveEditorLayout('บันทึกอัตโนมัติแล้ว'), 180);
+            }
+
+            function updateEditorFields() {
+                const count = selectedEditables.size;
+                const target = count > 1 ? selectionPivot : selectedEditable;
+                [editorX, editorY, editorZ, editorAngle, ...editorScales].forEach(input => {
+                    input.disabled = !target;
+                    if (!target) input.value = '';
+                });
+                editorName.disabled = count !== 1;
+                editorName.value = count === 1 ? selectedEditable.userData.editor.label : '';
+                for (const id of ['duplicate','delete','shrink','grow','focus']) document.getElementById(`editor-${id}`).disabled = !target;
+                editorSelected.textContent = count > 1 ? `เลือก ${count} วัตถุ · ปรับพร้อมกัน` :
+                    target ? target.userData.editor.label : 'เลือกวัตถุในฉากหรือจากรายการ';
+                if (target) {
+                    editorX.value = target.position.x.toFixed(2);
+                    editorY.value = target.position.y.toFixed(2);
+                    editorZ.value = target.position.z.toFixed(2);
+                    editorAngle.value = THREE.MathUtils.radToDeg(target.rotation.y).toFixed(1);
+                    editorScales.forEach((input, i) => input.value = target.scale.getComponent(i).toFixed(3));
+                }
+                document.getElementById('editor-undo').disabled = !editorUndoStack.length;
+                document.getElementById('editor-redo').disabled = !editorRedoStack.length;
+            }
+
+            function updateSelectionHighlights() {
+                selectionHighlightGroup.children.forEach(helper => { helper.geometry.dispose(); helper.material.dispose(); });
+                selectionHighlightGroup.clear();
+                selectedEditables.forEach(group => {
+                    const helper = new THREE.BoxHelper(group, '#1768d4');
+                    helper.material.depthTest = false;
+                    helper.material.transparent = true;
+                    helper.material.opacity = .9;
+                    helper.renderOrder = 100;
+                    selectionHighlightGroup.add(helper);
+                });
+            }
+
+            function releaseSelectionPivot() {
+                transformControls.detach();
+                [...selectionPivot.children].forEach(group => scene.attach(group));
+                selectionPivot.position.set(0, 0, 0);
+                selectionPivot.rotation.set(0, 0, 0);
+                selectionPivot.scale.set(1, 1, 1);
+                selectionPivot.updateMatrixWorld(true);
+            }
+
+            function rebuildSelectionTransform() {
+                releaseSelectionPivot();
+                const items = [...selectedEditables].filter(group =>
+                    editableObjects.get(group.userData.editor?.id) === group
+                );
+                selectedEditables.clear();
+                items.forEach(group => selectedEditables.add(group));
+                selectedEditable = items.at(-1) || null;
+                if (items.length === 1) {
+                    transformControls.attach(items[0]);
+                } else if (items.length > 1) {
+                    const center = new THREE.Vector3();
+                    items.forEach(group => center.add(group.getWorldPosition(new THREE.Vector3())));
+                    center.multiplyScalar(1 / items.length);
+                    selectionPivot.position.set(center.x, 0, center.z);
+                    selectionPivot.updateMatrixWorld(true);
+                    items.forEach(group => selectionPivot.attach(group));
+                    transformControls.attach(selectionPivot);
+                }
+                updateSelectionHighlights();
+                updateEditorFields();
+                refreshObjectSelection();
+            }
+
+            function selectEditable(group, additive = false) {
+                releaseSelectionPivot();
+                const valid = group && editableObjects.get(group.userData.editor?.id) === group ? group : null;
+                if (!additive) selectedEditables.clear();
+                if (valid) {
+                    if (additive && selectedEditables.has(valid)) selectedEditables.delete(valid);
+                    else selectedEditables.add(valid);
+                }
+                rebuildSelectionTransform();
+                editorStatus.textContent = selectedEditables.size > 1
+                    ? `เลือกพร้อมกัน ${selectedEditables.size} วัตถุ` : 'พร้อมแก้ไข';
+            }
+
+            function selectEditablesInScreenRect(startX, startY, endX, endY, additive = false) {
+                releaseSelectionPivot();
+                const rect = renderer.domElement.getBoundingClientRect();
+                const minX = Math.min(startX, endX), maxX = Math.max(startX, endX);
+                const minY = Math.min(startY, endY), maxY = Math.max(startY, endY);
+                const center = new THREE.Vector3();
+                const matches = [];
+
+                editableObjects.forEach(group => {
+                    updateEditableBounds(group);
+                    group.userData.editorBounds.getCenter(center);
+                    const projected = center.clone().project(camera);
+                    if (projected.z < -1 || projected.z > 1) return;
+                    const screenX = rect.left + (projected.x + 1) * rect.width / 2;
+                    const screenY = rect.top + (1 - projected.y) * rect.height / 2;
+                    if (screenX >= minX && screenX <= maxX && screenY >= minY && screenY <= maxY) {
+                        matches.push(group);
+                    }
+                });
+
+                if (!additive) selectedEditables.clear();
+                matches.forEach(group => selectedEditables.add(group));
+                rebuildSelectionTransform();
+                editorStatus.textContent = matches.length
+                    ? `เลือกจากกรอบ ${matches.length} วัตถุ · ลากแกนกลางเพื่อย้ายพร้อมกัน`
+                    : 'ไม่พบวัตถุในกรอบที่เลือก';
+            }
+
+            // Store world transforms because multiple objects are temporarily
+            // parented to selectionPivot while they are moved together.
+            function captureEditableTransforms(groups) {
+                return [...groups].map(group => {
+                    group.updateWorldMatrix(true, false);
+                    const position = new THREE.Vector3();
+                    const quaternion = new THREE.Quaternion();
+                    const scale = new THREE.Vector3();
+                    group.matrixWorld.decompose(position, quaternion, scale);
+                    return { group, position, quaternion, scale };
+                });
+            }
+
+            function sameTransformSnapshots(before, after) {
+                if (before.length !== after.length) return false;
+                return before.every((item, index) =>
+                    item.group === after[index].group &&
+                    item.position.distanceToSquared(after[index].position) < 1e-8 &&
+                    1 - Math.abs(item.quaternion.dot(after[index].quaternion)) < 1e-8 &&
+                    item.scale.distanceToSquared(after[index].scale) < 1e-8
+                );
+            }
+
+            function restoreEditableTransforms(snapshot) {
+                releaseSelectionPivot();
+                const restored = [];
+                snapshot.forEach(({ group, position, quaternion, scale }) => {
+                    if (editableObjects.get(group.userData.editor?.id) !== group) return;
+                    scene.attach(group);
+                    group.position.copy(position);
+                    group.quaternion.copy(quaternion);
+                    group.scale.copy(scale);
+                    group.updateMatrixWorld(true);
+                    updateEditableBounds(group);
+                    restored.push(group);
+                });
+                selectedEditables.clear();
+                restored.forEach(group => selectedEditables.add(group));
+                rebuildSelectionTransform();
+            }
+
+            function pushEditorUndo(label, undo) {
+                editorUndoStack.push({ label, undo });
+                editorRedoStack.length = 0;
+                if (editorUndoStack.length > 100) editorUndoStack.shift();
+                updateEditorFields();
+            }
+
+            function captureEditorState() {
+                return { entries: [...editableObjects.values()].map(group => ({ group,
+                    transform: captureEditableTransforms([group])[0], label: group.userData.editor.label })),
+                    selected: [...selectedEditables], deleted: [...deletedBuiltinObjects] };
+            }
+
+            function restoreEditorState(state) {
+                releaseSelectionPivot();
+                [...editableObjects.values()].forEach(removeEditable);
+                deletedBuiltinObjects.clear();
+                state.deleted.forEach(id => deletedBuiltinObjects.add(id));
+                restoreRemovedEditables(state.entries.map(({group}) => ({group, parent: scene})));
+                state.entries.forEach(({group, label}) => group.userData.editor.label = group.name = label);
+                restoreEditableTransforms(state.entries.map(entry => entry.transform));
+                selectedEditables.clear();
+                state.selected.forEach(group => selectedEditables.add(group));
+                rebuildSelectionTransform();
+            }
+
+            function undoEditorChange() {
+                const entry = editorUndoStack.pop();
+                if (!entry) return;
+                const current = captureEditorState();
+                clearTimeout(editorSaveTimer);
+                entry.undo();
+                editorRedoStack.push({ label: entry.label, undo: () => restoreEditorState(current) });
+                saveEditorLayout(`ย้อนกลับ: ${entry.label}`);
+                updateEditorFields();
+            }
+
+            function redoEditorChange() {
+                const entry = editorRedoStack.pop();
+                if (!entry) return;
+                const current = captureEditorState();
+                clearTimeout(editorSaveTimer);
+                entry.undo();
+                editorUndoStack.push({ label: entry.label, undo: () => restoreEditorState(current) });
+                saveEditorLayout(`ทำซ้ำ: ${entry.label}`);
+                updateEditorFields();
+            }
+
+            function restoreRemovedEditables(entries) {
+                entries.forEach(({ group, parent }) => {
+                    const data = group.userData.editor;
+                    if (!data) return;
+                    if (data.builtin) deletedBuiltinObjects.delete(data.id);
+                    (parent?.isObject3D ? parent : scene).add(group);
+                    group.traverse(obj => {
+                        if (!(obj.isMesh || obj.isLine || obj.isSprite)) return;
+                        obj.userData.editRoot = group;
+                        if (!meshesToPick.includes(obj)) meshesToPick.push(obj);
+                    });
+                    editableObjects.set(data.id, group);
+                    updateEditableBounds(group);
+                });
+            }
+
+            function removeEditable(group) {
+                const data = group.userData.editor;
+                if (!data) return null;
+                const parent = group.parent;
+                if (data.builtin) deletedBuiltinObjects.add(data.id);
+                editableObjects.delete(data.id);
+                unregisterPickMeshes(group);
+                group.removeFromParent();
+                return { group, parent };
+            }
+
+            function setEditorTransformMode(mode) {
+                transformControls.setMode(mode);
+                transformControls.setSpace(mode === 'scale' ? 'local' : 'world');
+                transformControls.showX = mode !== 'rotate';
+                transformControls.showY = true;
+                transformControls.showZ = mode !== 'rotate';
+                document.getElementById('editor-move').classList.toggle('active', mode === 'translate');
+                document.getElementById('editor-rotate').classList.toggle('active', mode === 'rotate');
+                document.getElementById('editor-scale').classList.toggle('active', mode === 'scale');
+            }
+
+            function setEditorMode(enabled) {
+                if (enabled && gameMode) setGameMode(false);
+                editorMode = enabled;
+                document.body.classList.toggle('editing', enabled);
+                document.body.classList.remove('panels-collapsed');
+                document.getElementById('editor-panels').textContent = 'ซ่อนแผง';
+                document.getElementById('editor-panels').setAttribute('aria-pressed', 'false');
+                editorPanel.hidden = !enabled;
+                for (const id of ['editor-topbar', 'editor-objects', 'editor-footer']) document.getElementById(id).hidden = !enabled;
+                document.getElementById('editor-reference').hidden = true;
+                editorToggle.classList.toggle('active', enabled);
+                controls.autoRotate = false;
+                document.getElementById('rotate').checked = false;
+                if (!enabled) { saveEditorLayout(); selectEditable(null); }
+                else { refreshObjectList(); updateEditorFields(); setEditorTransformMode(transformControls.mode); }
+                editorStatus.textContent = enabled ? 'เลือกวัตถุเพื่อเริ่มแก้ไข · บันทึกอัตโนมัติ' : 'บันทึกและปิดโหมดแก้ไขแล้ว';
+            }
+
+            function deleteSelectedEditable() {
+                if (!selectedEditables.size) return;
+                const targets = [...selectedEditables];
+                releaseSelectionPivot();
+                const removed = targets.map(removeEditable).filter(Boolean);
+                selectedEditables.clear();
+                rebuildSelectionTransform();
+                pushEditorUndo(`Delete ${targets.length} object(s)`, () => {
+                    restoreRemovedEditables(removed);
+                    selectedEditables.clear();
+                    removed.forEach(({ group }) => selectedEditables.add(group));
+                    rebuildSelectionTransform();
+                });
+                saveEditorLayout(`ลบ ${targets.length} วัตถุแล้ว`);
+            }
+
+            function duplicateSelectedEditable() {
+                if (!selectedEditables.size) return;
+                const targets = [...selectedEditables];
+                releaseSelectionPivot();
+                selectedEditables.clear();
+                const copies = [];
+                targets.forEach(source => {
+                    const type = source.userData.editor.type;
+                    const sourceId = source.userData.editor.sourceId || (source.userData.editor.builtin ? source.userData.editor.id : null);
+                    const copy = createEditorObject(type, '', source.position.clone().add(new THREE.Vector3(2, 0, 2)), false, sourceId);
+                    copy.userData.editor.label = `${source.userData.editor.label} (สำเนา)`;
+                    copy.rotation.copy(source.rotation);
+                    copy.scale.copy(source.scale);
+                    updateEditableBounds(copy);
+                    selectedEditables.add(copy);
+                    copies.push(copy);
+                });
+                rebuildSelectionTransform();
+                pushEditorUndo(`Duplicate ${copies.length} object(s)`, () => {
+                    releaseSelectionPivot();
+                    copies.forEach(removeEditable);
+                    selectedEditables.clear();
+                    rebuildSelectionTransform();
+                });
+                saveEditorLayout(`ทำสำเนา ${targets.length} วัตถุแล้ว`);
+            }
+
+            transformControls.addEventListener('dragging-changed', event => {
+                controls.enabled = !event.value && !gameMode;
+                if (event.value) editorTransformPointerActive = true;
+                else setTimeout(() => { editorTransformPointerActive = false; }, 0);
+            });
+            transformControls.addEventListener('mouseDown', () => {
+                editorTransformBefore = selectedEditables.size
+                    ? captureEditableTransforms(selectedEditables) : null;
+            });
+            transformControls.addEventListener('mouseUp', () => {
+                if (!editorTransformBefore) return;
+                const before = editorTransformBefore;
+                editorTransformBefore = null;
+                const after = captureEditableTransforms(selectedEditables);
+                if (!sameTransformSnapshots(before, after)) {
+                    pushEditorUndo('Move / rotate object', () => restoreEditableTransforms(before));
+                }
+            });
+            transformControls.addEventListener('objectChange', () => {
+                if (!selectedEditables.size) return;
+                const target = selectedEditables.size > 1 ? selectionPivot : selectedEditable;
+                target.scale.clampScalar(.05, 20);
+                selectedEditables.forEach(updateEditableBounds);
+                updateSelectionHighlights();
+                updateEditorFields();
+                scheduleEditorSave();
+            });
+
+            editorToggle.addEventListener('click', () => setEditorMode(!editorMode));
+            document.getElementById('editor-move').addEventListener('click', () => setEditorTransformMode('translate'));
+            document.getElementById('editor-rotate').addEventListener('click', () => setEditorTransformMode('rotate'));
+            document.getElementById('editor-add').addEventListener('click', () => {
+                const type = document.getElementById('editor-add-type').value;
+                const group = createEditorObject(type);
+                selectEditable(group);
+                pushEditorUndo('Add object', () => {
+                    releaseSelectionPivot();
+                    removeEditable(group);
+                    selectedEditables.clear();
+                    rebuildSelectionTransform();
+                });
+                saveEditorLayout('เพิ่มวัตถุแล้ว');
+            });
+            document.getElementById('editor-duplicate').addEventListener('click', duplicateSelectedEditable);
+            document.getElementById('editor-delete').addEventListener('click', deleteSelectedEditable);
+            document.getElementById('editor-save').addEventListener('click', () => saveEditorLayout());
+            document.getElementById('editor-reset').addEventListener('click', () => {
+                if (!confirm('คืนตำแหน่งและวัตถุทั้งหมดเป็นค่าเริ่มต้นหรือไม่?')) return;
+                localStorage.removeItem(EDITOR_STORAGE_KEY);
+                location.reload();
+            });
+            [editorX, editorY, editorZ, editorAngle, ...editorScales].forEach(input => {
+                input.addEventListener('change', () => {
+                    if (!selectedEditables.size) return;
+                    const before = captureEditableTransforms(selectedEditables);
+                    const transformTarget = selectedEditables.size > 1 ? selectionPivot : selectedEditable;
+                    if (!transformTarget) return;
+                    if (!input.value.trim() || !Number.isFinite(Number(input.value))) { updateEditorFields(); return; }
+                    const value = Number(input.value);
+                    const scaleIndex = editorScales.indexOf(input);
+                    if (scaleIndex >= 0) {
+                        const next = clamp(value, .05, 20);
+                        if (document.getElementById('editor-uniform').checked) {
+                            const ratio = next / transformTarget.scale.getComponent(scaleIndex);
+                            transformTarget.scale.multiplyScalar(ratio).clampScalar(.05, 20);
+                        } else transformTarget.scale.setComponent(scaleIndex, next);
+                    } else if (input === editorAngle) transformTarget.rotation.y = THREE.MathUtils.degToRad(value);
+                    else transformTarget.position[input === editorX ? 'x' : input === editorY ? 'y' : 'z'] = value;
+                    transformTarget.updateMatrixWorld(true);
+                    selectedEditables.forEach(updateEditableBounds);
+                    updateSelectionHighlights();
+                    updateEditorFields();
+                    const after = captureEditableTransforms(selectedEditables);
+                    if (!sameTransformSnapshots(before, after)) {
+                        pushEditorUndo('Edit coordinates', () => restoreEditableTransforms(before));
+                    }
+                    saveEditorLayout('ใช้ค่าพิกัดแล้ว');
+                });
+            });
+
+            // Workspace extension
+function cloneEditorGroup(source) {
+    // Three's clone serializes userData. editRoot is intentionally a cyclic runtime reference.
+    const metadata = [];
+    source.traverse(object => {
+        metadata.push([object, object.userData]);
+        object.userData = object.userData.info ? { info: { ...object.userData.info } } : {};
+    });
+    try { return source.clone(true); }
+    finally { metadata.forEach(([object, data]) => object.userData = data); }
+}
+
+function refreshObjectSelection() {
+    document.querySelectorAll('#object-list button').forEach(button => {
+        const selected = selectedEditables.has(editableObjects.get(button.dataset.objectId));
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-pressed', String(selected));
+    });
+}
+
+function refreshObjectList() {
+    const list = document.getElementById('object-list');
+    const query = document.getElementById('object-search').value.trim().toLowerCase();
+    const items = [...editableObjects.values()].filter(group =>
+        `${group.userData.editor.label} ${group.userData.editor.id}`.toLowerCase().includes(query));
+    items.sort((a, b) => Number(b.userData.editor.id.startsWith('building-')) - Number(a.userData.editor.id.startsWith('building-')) ||
+        Number(a.userData.editor.builtin) - Number(b.userData.editor.builtin) ||
+        a.userData.editor.label.localeCompare(b.userData.editor.label, 'th'));
+    document.getElementById('object-count').textContent = `${items.length}`;
+    list.replaceChildren();
+    const fragment = document.createDocumentFragment();
+    // Large scenes contain thousands of decorative meshes: search narrows the full set.
+    items.slice(0, 150).forEach(group => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.objectId = group.userData.editor.id;
+        button.textContent = group.userData.editor.label;
+        button.title = group.userData.editor.label;
+        const detail = document.createElement('small');
+        detail.textContent = group.userData.editor.id.startsWith('building-') ? 'อาคารหลัก' : group.userData.editor.builtin ? 'วัตถุในฉาก' : 'วัตถุที่เพิ่ม';
+        button.append(detail);
+        button.addEventListener('click', event => selectEditable(group, event.shiftKey));
+        button.addEventListener('dblclick', focusEditorSelection);
+        fragment.append(button);
+    });
+    if (!items.length || items.length > 150) {
+        const hint = document.createElement('p');
+        hint.className = 'editor-help';
+        hint.textContent = items.length ? 'แสดง 150 รายการแรก · พิมพ์ค้นหาเพื่อดูรายการอื่น' : 'ไม่พบวัตถุที่ค้นหา';
+        fragment.append(hint);
+    }
+    list.append(fragment);
+    refreshObjectSelection();
+}
+
+function focusEditorSelection() {
+    if (!selectedEditables.size) return;
+    const bounds = new THREE.Box3();
+    selectedEditables.forEach(group => bounds.expandByObject(group));
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    transition = null;
+    const direction = camera.position.clone().sub(controls.target).normalize();
+    controls.target.copy(center);
+    if (camera.isOrthographicCamera) {
+        camera.position.set(center.x, center.y + 245, center.z);
+        camera.zoom = clamp(Math.min((camera.right - camera.left) / Math.max(size.x * 2, 12),
+            (camera.top - camera.bottom) / Math.max(size.z * 1.8, 12)), .65, 4);
+    } else {
+        const distance = Math.max(15, size.length() / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.5);
+        camera.position.copy(center).addScaledVector(direction, distance);
+    }
+    camera.updateProjectionMatrix();
+    controls.update();
+}
+
+function scaleEditorSelection(factor) {
+    if (!selectedEditables.size) return;
+    const before = captureEditableTransforms(selectedEditables);
+    const target = selectedEditables.size > 1 ? selectionPivot : selectedEditable;
+    target.scale.multiplyScalar(factor).clampScalar(.05, 20);
+    target.updateMatrixWorld(true);
+    selectedEditables.forEach(updateEditableBounds);
+    updateSelectionHighlights();
+    pushEditorUndo('ปรับขนาด', () => restoreEditableTransforms(before));
+    saveEditorLayout('ปรับขนาดและบันทึกแล้ว');
+    updateEditorFields();
+}
+
+async function toggleFullscreen() {
+    try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        else if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
+        else throw new Error('Fullscreen unavailable');
+    } catch (error) {
+        editorStatus.textContent = 'เบราว์เซอร์ไม่อนุญาตเต็มหน้าจอ · ใช้ F11 ได้';
+        if (!editorMode) document.getElementById('viewer-fullscreen').textContent = 'ใช้ F11 เพื่อเต็มหน้าจอ';
+    }
+}
+
+document.getElementById('object-search').addEventListener('input', refreshObjectList);
+document.getElementById('editor-focus').addEventListener('click', focusEditorSelection);
+document.getElementById('editor-scale').addEventListener('click', () => setEditorTransformMode('scale'));
+document.getElementById('editor-shrink').addEventListener('click', () => scaleEditorSelection(.9));
+document.getElementById('editor-grow').addEventListener('click', () => scaleEditorSelection(1.1));
+document.getElementById('editor-undo').addEventListener('click', undoEditorChange);
+document.getElementById('editor-redo').addEventListener('click', redoEditorChange);
+document.getElementById('editor-done').addEventListener('click', () => setEditorMode(false));
+document.getElementById('editor-panels').addEventListener('click', event => {
+    const collapsed = document.body.classList.toggle('panels-collapsed');
+    event.currentTarget.textContent = collapsed ? 'แสดงแผง' : 'ซ่อนแผง';
+    event.currentTarget.setAttribute('aria-pressed', String(collapsed));
+});
+['viewer-fullscreen', 'editor-fullscreen'].forEach(id => document.getElementById(id).addEventListener('click', toggleFullscreen));
+document.addEventListener('fullscreenchange', () => {
+    ['viewer-fullscreen', 'editor-fullscreen'].forEach(id => {
+        document.getElementById(id).textContent = document.fullscreenElement ? '⛶ ออกจากเต็มจอ' : '⛶ เต็มหน้าจอ';
+        document.getElementById(id).setAttribute('aria-pressed', String(!!document.fullscreenElement));
+    });
+});
+document.getElementById('editor-snap').addEventListener('change', event => {
+    transformControls.setTranslationSnap(event.target.checked ? .25 : null);
+    transformControls.setRotationSnap(event.target.checked ? THREE.MathUtils.degToRad(5) : null);
+    transformControls.setScaleSnap(event.target.checked ? .05 : null);
+});
+editorName.addEventListener('change', () => {
+    if (selectedEditables.size !== 1) return;
+    const group = selectedEditable;
+    const before = group.userData.editor.label;
+    const name = editorName.value.trim();
+    if (!name || name === before) { updateEditorFields(); return; }
+    group.userData.editor.label = group.name = name;
+    pushEditorUndo('เปลี่ยนชื่อ', () => { group.userData.editor.label = group.name = before; updateEditorFields(); });
+    updateEditorFields();
+    saveEditorLayout('บันทึกชื่อวัตถุแล้ว');
+});
+document.getElementById('editor-export').addEventListener('click', () => {
+    const state = saveEditorLayout('ส่งออกผังเป็น JSON แล้ว');
+    const url = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'tdk-factory-layout.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+document.getElementById('editor-reference-toggle').addEventListener('click', () => {
+    const panel = document.getElementById('editor-reference');
+    panel.hidden = !panel.hidden;
+});
+for (const type of ['aerial', 'satellite']) {
+    document.getElementById(`reference-${type}`).addEventListener('click', () => {
+        const url = `../v2/references/factory-${type}.png`;
+        document.getElementById('editor-reference-image').src = url;
+        document.getElementById('reference-link').href = url;
+        for (const key of ['aerial','satellite']) document.getElementById(`reference-${key}`).classList.toggle('active', key === type);
+    });
+}
+
+            // ------------------------------------------------------------
+            // Interaction
+            // ------------------------------------------------------------
+            const views = {
+                photo: { position: new THREE.Vector3(...CAMERA_PRESETS.reference.position), target: new THREE.Vector3(...CAMERA_PRESETS.reference.target), fov: CAMERA_PRESETS.reference.fov, locked: true },
+                aerial: { position: new THREE.Vector3(...CAMERA_PRESETS.aerial.position), target: new THREE.Vector3(...CAMERA_PRESETS.aerial.target), fov: CAMERA_PRESETS.aerial.fov },
+                gate: { position: new THREE.Vector3(...CAMERA_PRESETS.gate.position), target: new THREE.Vector3(...CAMERA_PRESETS.gate.target), fov: CAMERA_PRESETS.gate.fov },
+                office: { position: new THREE.Vector3(...CAMERA_PRESETS.office.position), target: new THREE.Vector3(...CAMERA_PRESETS.office.target), fov: CAMERA_PRESETS.office.fov },
+                factory: { position: new THREE.Vector3(...CAMERA_PRESETS.factory.position), target: new THREE.Vector3(...CAMERA_PRESETS.factory.target), fov: CAMERA_PRESETS.factory.fov },
+                top: { position: new THREE.Vector3(...CAMERA_PRESETS.top.position), target: new THREE.Vector3(...CAMERA_PRESETS.top.target), orthographic: true }
+            };
+
+            let transition = null;
+            let activeViewKey = 'photo';
+
+            function setActiveCamera(nextCamera) {
+                camera = nextCamera;
+                controls.object = nextCamera;
+                transformControls.camera = nextCamera;
+                controls.update();
+            }
+
+            document.querySelectorAll('.view').forEach(button => {
+                button.addEventListener('click', () => {
+                    if (gameMode) setGameMode(false);
+                    document.querySelectorAll('.view').forEach(b => b.classList.remove('active'));
+                    document.querySelectorAll(`.view[data-view="${button.dataset.view}"]`).forEach(item => item.classList.add('active'));
+                    activeViewKey = button.dataset.view;
+                    const view = views[activeViewKey];
+                    controls.autoRotate = false;
+                    document.getElementById('rotate').checked = false;
+                    if (view.orthographic) {
+                        setActiveCamera(topCamera);
+                        topCamera.position.copy(view.position);
+                        controls.target.copy(view.target);
+                        topCamera.lookAt(view.target);
+                        controls.enableRotate = false;
+                        controls.enablePan = true;
+                        controls.minZoom = .65;
+                        controls.maxZoom = 4;
+                        topCamera.zoom = 1;
+                        topCamera.updateProjectionMatrix();
+                        transition = null;
+                        controls.update();
+                        return;
+                    }
+                    if (camera !== perspectiveCamera) {
+                        setActiveCamera(perspectiveCamera);
+                        perspectiveCamera.position.set(0, 150, 165);
+                    }
+                    controls.enableRotate = true;
+                    controls.enablePan = true;
+                    perspectiveCamera.fov = view.fov;
+                    perspectiveCamera.updateProjectionMatrix();
+                    transition = {
+                        time: performance.now(),
+                        fromPosition: perspectiveCamera.position.clone(),
+                        fromTarget: controls.target.clone(),
+                        toPosition: view.position,
+                        toTarget: view.target
+                    };
+                });
+            });
+
+            controls.addEventListener('start', () => { transition = null; });
+
+            document.getElementById('labels').addEventListener('change', event => {
+                labelGroup.visible = event.target.checked;
+            });
+
+            document.getElementById('debug').addEventListener('change', event => {
+                debugGroup.visible = event.target.checked;
+            });
+
+            const overlay = document.getElementById('reference-overlay');
+            const overlayState = { opacity: .42, scale: 1, x: 0, y: 0, rotation: 0, url: '' };
+            function updateOverlay() {
+                overlay.style.opacity = overlayState.opacity;
+                overlay.style.transform = `translate(${overlayState.x}px, ${overlayState.y}px) scale(${overlayState.scale}) rotate(${overlayState.rotation}deg)`;
+                overlay.style.display = overlayState.url ? 'block' : 'none';
+            }
+            document.getElementById('overlay-file').addEventListener('change', event => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                if (overlayState.url) URL.revokeObjectURL(overlayState.url);
+                overlayState.url = URL.createObjectURL(file);
+                overlay.src = overlayState.url;
+                updateOverlay();
+            });
+            [
+                ['overlay-opacity', 'opacity', value => Number(value), value => `${Math.round(value * 100)}%`],
+                ['overlay-scale', 'scale', value => Number(value), value => `${Math.round(value * 100)}%`],
+                ['overlay-x', 'x', value => Number(value), value => `${value}`],
+                ['overlay-y', 'y', value => Number(value), value => `${value}`],
+                ['overlay-rotation', 'rotation', value => Number(value), value => `${value}°`]
+            ].forEach(([id, key, parse, format]) => {
+                const input = document.getElementById(id);
+                const output = input.parentElement.querySelector('output');
+                input.addEventListener('input', () => {
+                    overlayState[key] = parse(input.value);
+                    output.value = format(overlayState[key]);
+                    updateOverlay();
+                });
+            });
+            document.getElementById('overlay-clear').addEventListener('click', () => {
+                if (overlayState.url) URL.revokeObjectURL(overlayState.url);
+                overlayState.url = '';
+                overlay.removeAttribute('src');
+                document.getElementById('overlay-file').value = '';
+                updateOverlay();
+            });
+
+            document.getElementById('rotate').addEventListener('change', event => {
+                if (event.target.checked && camera === topCamera) {
+                    event.target.checked = false;
+                    return;
+                }
+                if (event.target.checked && gameMode) setGameMode(false);
+                if (event.target.checked && editorMode) setEditorMode(false);
+                controls.autoRotate = event.target.checked;
+                transition = null;
+            });
+
+            document.getElementById('warm').addEventListener('change', event => {
+                const warm = event.target.checked;
+                sun.color.set(warm ? '#ffd098' : '#fff5de');
+                sun.position.set(warm ? -125 : -85, warm ? 65 : 145, warm ? 90 : 65);
+                sun.intensity = warm ? 3.6 : 3.1;
+                ambient.intensity = warm ? 1.5 : 2.35;
+                scene.background.set(warm ? '#ead8c4' : '#f4f8fa');
+                scene.fog.color.copy(scene.background);
+            });
+
+            document.getElementById('game-toggle').addEventListener('click', () => {
+                setGameMode(!gameMode);
+            });
+
+            window.addEventListener('keydown', event => {
+                const typing = /INPUT|SELECT|TEXTAREA/.test(event.target?.tagName || '');
+                if (editorMode && !typing) {
+                    if (event.code === 'KeyG' && !event.ctrlKey && !event.metaKey) setEditorTransformMode('translate');
+                    if (event.code === 'KeyR' && !event.ctrlKey && !event.metaKey) setEditorTransformMode('rotate');
+                    if (event.code === 'KeyS' && !event.ctrlKey && !event.metaKey) setEditorTransformMode('scale');
+                    if (event.code === 'KeyF' && !event.ctrlKey && !event.metaKey) focusEditorSelection();
+                    if (event.code === 'KeyD' && !event.ctrlKey && !event.metaKey) duplicateSelectedEditable();
+                    if (event.code === 'Delete' || event.code === 'Backspace') deleteSelectedEditable();
+                    if (event.code === 'Escape') selectEditable(null);
+                    if ((event.ctrlKey || event.metaKey) && event.code === 'KeyZ') event.shiftKey ? redoEditorChange() : undoEditorChange();
+                    if ((event.ctrlKey || event.metaKey) && event.code === 'KeyY') redoEditorChange();
+                    if ((event.ctrlKey || event.metaKey) && event.code === 'KeyS') saveEditorLayout();
+                    if (['KeyG', 'KeyR', 'KeyD', 'KeyF', 'Delete', 'Backspace'].includes(event.code) ||
+                        ((event.ctrlKey || event.metaKey) && ['KeyS', 'KeyZ', 'KeyY'].includes(event.code))) event.preventDefault();
+                }
+                if (typing) return;
+                playerKeys[event.code] = true;
+                if (gameMode && event.code === 'Digit1') selectWeapon('unarmed');
+                if (gameMode && event.code === 'Digit2') selectWeapon('knife');
+                if (gameMode && event.code === 'Digit3') selectWeapon('pistol');
+                if (gameMode && event.code === 'KeyV' && !event.repeat) setGameView(!gameFirstPerson);
+                if (gameMode && event.code === 'Space') jumpQueued = true;
+                if (gameMode && GAME_MOVEMENT_CODES.includes(event.code)) {
+                    event.preventDefault();
+                }
+                if (gameMode && event.code === 'KeyV') event.preventDefault();
+                if (gameMode && event.code === 'Escape') setGameMode(false);
+            });
+
+            window.addEventListener('keyup', event => {
+                playerKeys[event.code] = false;
+            });
+
+            window.addEventListener('blur', () => {
+                clearPlayerInput();
+            });
+
+            const touchKeyMap = { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD' };
+            document.querySelectorAll('#game-pad button').forEach(button => {
+                const code = touchKeyMap[button.dataset.key];
+                button.addEventListener('pointerdown', event => {
+                    event.preventDefault();
+                    playerKeys[code] = true;
+                    button.setPointerCapture(event.pointerId);
+                });
+                ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => {
+                    button.addEventListener(type, () => { playerKeys[code] = false; });
+                });
+            });
+
+            const raycaster = new THREE.Raycaster();
+            const pointer = new THREE.Vector2();
+            let downX = 0, downY = 0;
+
+            renderer.domElement.addEventListener('pointerdown', event => {
+                downX = event.clientX;
+                downY = event.clientY;
+                if (gameMode && event.pointerType !== 'touch') {
+                    if (event.button === 0) playerKeys.Mouse0 = true;
+                    if (event.button === 2) {
+                        gameMouseLook = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+                        renderer.domElement.setPointerCapture(event.pointerId);
+                    }
+                    event.preventDefault();
+                    return;
+                }
+                if (gameMode && event.pointerType === 'touch') {
+                    gameTouchLook = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+                    renderer.domElement.setPointerCapture(event.pointerId);
+                    return;
+                }
+                if (editorMode && event.button === 0 && (event.ctrlKey || event.metaKey)) {
+                    editorBoxSelection = {
+                        pointerId: event.pointerId,
+                        startX: event.clientX, startY: event.clientY,
+                        active: false
+                    };
+                    controls.enabled = false;
+                }
+            });
+
+            renderer.domElement.addEventListener('pointermove', event => {
+                if (gameMouseLook && event.pointerId === gameMouseLook.pointerId) {
+                    gameCameraYaw -= (event.clientX - gameMouseLook.x) * GAME_CONFIG.mouseSensitivity;
+                    gameCameraPitch = clamp(
+                        gameCameraPitch - (event.clientY - gameMouseLook.y) * GAME_CONFIG.mouseSensitivity,
+                        GAME_CONFIG.minPitch, GAME_CONFIG.maxPitch
+                    );
+                    gameMouseLook.x = event.clientX;
+                    gameMouseLook.y = event.clientY;
+                    event.preventDefault();
+                    return;
+                }
+                if (gameTouchLook && event.pointerId === gameTouchLook.pointerId) {
+                    gameCameraYaw -= (event.clientX - gameTouchLook.x) * .012;
+                    gameCameraPitch = clamp(
+                        gameCameraPitch - (event.clientY - gameTouchLook.y) * GAME_CONFIG.touchSensitivity,
+                        GAME_CONFIG.minPitch, GAME_CONFIG.maxPitch
+                    );
+                    gameTouchLook.x = event.clientX;
+                    gameTouchLook.y = event.clientY;
+                    event.preventDefault();
+                    return;
+                }
+                if (!editorBoxSelection || event.pointerId !== editorBoxSelection.pointerId) return;
+                const selection = editorBoxSelection;
+                if (!selection.active && Math.hypot(event.clientX - selection.startX, event.clientY - selection.startY) > 5) {
+                    selection.active = true;
+                    controls.enabled = false;
+                    editorMarquee.style.display = 'block';
+                    renderer.domElement.setPointerCapture(event.pointerId);
+                }
+                if (!selection.active) return;
+                const left = Math.min(selection.startX, event.clientX);
+                const top = Math.min(selection.startY, event.clientY);
+                editorMarquee.style.left = `${left}px`;
+                editorMarquee.style.top = `${top}px`;
+                editorMarquee.style.width = `${Math.abs(event.clientX - selection.startX)}px`;
+                editorMarquee.style.height = `${Math.abs(event.clientY - selection.startY)}px`;
+                event.preventDefault();
+            });
+
+            renderer.domElement.addEventListener('pointerup', event => {
+                if (gameMouseLook && event.pointerId === gameMouseLook.pointerId) {
+                    gameMouseLook = null;
+                    return;
+                }
+                if (gameTouchLook && event.pointerId === gameTouchLook.pointerId) {
+                    gameTouchLook = null;
+                    return;
+                }
+                if (gameMode) {
+                    if (event.button === 0) playerKeys.Mouse0 = false;
+                    return;
+                }
+                if (editorBoxSelection && event.pointerId === editorBoxSelection.pointerId) {
+                    const selection = editorBoxSelection;
+                    editorBoxSelection = null;
+                    editorMarquee.style.display = 'none';
+                    controls.enabled = !gameMode;
+                    if (selection.active) {
+                        selectEditablesInScreenRect(selection.startX, selection.startY, event.clientX, event.clientY, true);
+                        return;
+                    }
+                }
+                if (gameMode) return;
+                if (transformControls.dragging || editorTransformPointerActive) return;
+                if (event.button !== 0) return;
+                if (Math.hypot(event.clientX - downX, event.clientY - downY) > 5) return;
+                const rect = renderer.domElement.getBoundingClientRect();
+                pointer.set(
+                    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+                    -((event.clientY - rect.top) / rect.height) * 2 + 1
+                );
+                raycaster.setFromCamera(pointer, camera);
+                const hit = raycaster.intersectObjects(meshesToPick, false)[0];
+                if (editorMode) {
+                    selectEditable(
+                        hit?.object.userData.editRoot || null,
+                        event.shiftKey || event.ctrlKey || event.metaKey
+                    );
+                    return;
+                }
+                if (hit?.object.userData.info) {
+                    const info = hit.object.userData.info;
+                    document.getElementById('info-title').textContent = info.title;
+                    document.getElementById('info-text').textContent = info.description;
+                }
+            });
+
+            renderer.domElement.addEventListener('pointercancel', event => {
+                if (gameMouseLook && event.pointerId === gameMouseLook.pointerId) {
+                    gameMouseLook = null;
+                    return;
+                }
+                if (gameTouchLook && event.pointerId === gameTouchLook.pointerId) {
+                    gameTouchLook = null;
+                    return;
+                }
+                if (gameMode) {
+                    playerKeys.Mouse0 = false;
+                    return;
+                }
+                if (!editorBoxSelection || event.pointerId !== editorBoxSelection.pointerId) return;
+                editorBoxSelection = null;
+                editorMarquee.style.display = 'none';
+                controls.enabled = !gameMode;
+            });
+
+            renderer.domElement.addEventListener('contextmenu', event => {
+                if (gameMode) event.preventDefault();
+            });
+
+            window.addEventListener('resize', () => {
+                perspectiveCamera.aspect = innerWidth / innerHeight;
+                perspectiveCamera.updateProjectionMatrix();
+                const halfHeight = CAMERA_PRESETS.top.orthoHeight / 2;
+                const halfWidth = halfHeight * innerWidth / innerHeight;
+                topCamera.left = -halfWidth;
+                topCamera.right = halfWidth;
+                topCamera.top = halfHeight;
+                topCamera.bottom = -halfHeight;
+                topCamera.updateProjectionMatrix();
+                renderer.setPixelRatio(Math.min(devicePixelRatio, innerWidth < 700 ? 1.15 : 1.4));
+                renderer.setSize(innerWidth, innerHeight);
+                document.getElementById('game-pad').classList.toggle('show', gameMode && innerWidth <= 900);
+            });
+
+            // ------------------------------------------------------------
+            // Render loop
+            // ------------------------------------------------------------
+            const clock = new THREE.Clock();
+
+            renderer.setAnimationLoop(() => {
+                const dt = Math.min(clock.getDelta(), .05);
+                if (transition) {
+                    const t = Math.min((performance.now() - transition.time) / 1400, 1);
+                    const ease = t * t * (3 - 2 * t);
+                    camera.position.lerpVectors(
+                        transition.fromPosition, transition.toPosition, ease
+                    );
+                    controls.target.lerpVectors(
+                        transition.fromTarget, transition.toTarget, ease
+                    );
+                    if (t >= 1) transition = null;
+                }
+                updateActivity(dt);
+                updatePlayer(dt);
+                if (!gameMode) controls.update(dt);
+                renderer.render(scene, camera);
+            });
+
+            loading.style.opacity = '0';
+            setTimeout(() => loading.remove(), 550);
+
+        } catch (error) {
+            console.error(error);
+            document.getElementById('load-message').textContent =
+                'เปิดแบบจำลองไม่สำเร็จ กรุณาใช้เบราว์เซอร์ที่รองรับ WebGL และตรวจสอบอินเทอร์เน็ต';
+            const spinner = document.querySelector('.spinner');
+            if (spinner) spinner.style.display = 'none';
+        }
+    
