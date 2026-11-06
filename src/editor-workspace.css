@@ -33,6 +33,9 @@ textarea {
     backdrop-filter: blur(18px);
 }
 
+.editor-interior-button { width: 100%; margin: 9px 0 13px; border-color: #4ba7cf; color: #1556a5; background: #eaf7fc; font-weight: 700; }
+.editor-interior-button:disabled { opacity: .45; cursor: not-allowed; }
+
 header.panel,
 nav.panel,
 .reference-tools.panel,

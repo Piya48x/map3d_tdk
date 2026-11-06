@@ -1,0 +1,7 @@
+editor.html
+qa/
+.codex-*/
+exports/
+test.html
+tdk-factory-map-export.js
+snapshots/baseline-2026-11-05/tdk-map-source-baseline-2026-11-05.zip

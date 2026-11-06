@@ -4,7 +4,10 @@ import * as THREE from 'three';
         import { SITE, GAME_CONFIG } from './app-config.js';
         import { TOP_VIEW_GRID, BUILDINGS, BUILDING_BY_ID, CAMERA_PRESETS, ROADS, WALKWAYS, PARKING_AREAS, FENCES, FRONT_WALLS, VEGETATION, layoutWarnings } from './factory-data.js';
         import { GAME_MOVEMENT_CODES, getMovementInput, movementDelta, clamp } from './game-controls.js';
-        import { auditLayoutAgainstBaseline, embedLayoutInStandalone } from './threejs-export.js';
+        import { auditLayoutAgainstBaseline, prepareBaselineRepair, embedLayoutInStandalone } from './threejs-export.js';
+        import { createActivityNavigator, positionOnActivityLoop } from './activity-navigation.js';
+        import { createAdaptiveRenderQuality } from './render-quality.js';
+        import { BUILDING_INTERIORS, createBuildingInterior } from './building-interiors.js';
 
         const loading = document.getElementById('loading');
 
@@ -50,9 +53,15 @@ import * as THREE from 'three';
 
             const renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(initialViewportSize.width, initialViewportSize.height, false);
-            renderer.setPixelRatio(Math.min(devicePixelRatio, innerWidth < 700 ? 1.5 : 2.25));
+            const renderQuality = createAdaptiveRenderQuality({
+                devicePixelRatio, width: initialViewportSize.width, height: initialViewportSize.height,
+                compact: innerWidth < 700,
+                onChange: ratio => renderer.setPixelRatio(ratio)
+            });
             renderer.shadowMap.enabled = true;
             renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.shadowMap.autoUpdate = false;
+            renderer.shadowMap.needsUpdate = true;
             renderer.outputColorSpace = THREE.SRGBColorSpace;
             renderer.toneMapping = THREE.ACESFilmicToneMapping;
             renderer.toneMappingExposure = 1.12;
@@ -62,6 +71,7 @@ import * as THREE from 'three';
 
             const controls = new OrbitControls(camera, renderer.domElement);
             let overlayEnabled = false;
+            let activeInterior = null;
             controls.target.set(...startupPreset.target);
             controls.enableDamping = true;
             controls.dampingFactor = 0.065;
@@ -83,7 +93,7 @@ import * as THREE from 'three';
             const sun = new THREE.DirectionalLight('#fff6df', 3.35);
             sun.position.set(-85, 145, 65);
             sun.castShadow = true;
-            const shadowSize = 4096;
+            const shadowSize = 2048;
             sun.shadow.mapSize.set(shadowSize, shadowSize);
             Object.assign(sun.shadow.camera, {
                 left: -135, right: 135, top: 135, bottom: -135, near: 1, far: 380
@@ -100,8 +110,8 @@ import * as THREE from 'three';
 
             const moon = new THREE.DirectionalLight('#83aef5', 0);
             moon.position.set(95, 120, -80);
-            moon.castShadow = true;
-            moon.shadow.mapSize.set(2048, 2048);
+            moon.castShadow = false;
+            moon.shadow.mapSize.set(1024, 1024);
             Object.assign(moon.shadow.camera, {
                 left: -145, right: 145, top: 145, bottom: -145, near: 1, far: 400
             });
@@ -230,6 +240,7 @@ import * as THREE from 'three';
             const EDITOR_LAYOUT_REVISION = 12;
             const editorRenderModeStates = new WeakMap();
             const editableObjects = new Map();
+            let activityObstacleRevision = 0;
             const builtinTemplates = new Map();
             const deletedBuiltinObjects = new Set();
             let editorSequence = 0;
@@ -494,6 +505,8 @@ import * as THREE from 'three';
             function updateEditableBounds(group) {
                 group.updateWorldMatrix(true, true);
                 group.userData.editorBounds = new THREE.Box3().setFromObject(group).expandByScalar(.18);
+                activityObstacleRevision++;
+                renderer.shadowMap.needsUpdate = true;
             }
 
             function unregisterPickMeshes(group) {
@@ -1431,12 +1444,12 @@ import * as THREE from 'three';
 
                 if (facade.sign) {
                     if (id === 'doke1_store') {
-                        // The Store sign sits on the blue front wall, not above the roof,
-                        // and keeps the reference board's wide, readable proportions.
-                        tdkSign(group, 0, .3 + h * .78, d / 2 + .52, 19.5, 3.55);
+                        // Mount the photographed sign high on the blue curved gable,
+                        // with its top still below the roof arc at both ends.
+                        tdkSign(group, 0, h + .45 + rise * .43, d / 2 + .9, 19.5, 3.55);
                     } else if (id === 'doke2_assy') {
                         const doke2FacadeSign = sign(group, 'DK  T.D.K. INDUSTRIAL CO., LTD.',
-                            0, h * .78, d / 2 + .66, Math.min(30, w * .78), 2.35,
+                            0, h + .45 + rise * .45, d / 2 + .9, Math.min(30, w * .78), 2.35,
                             { background: '#ffffff', color: '#0b4e8b', fontSize: 64 });
                         doke2FacadeSign.name = 'TDK company sign';
                     } else {
@@ -2176,6 +2189,9 @@ import * as THREE from 'three';
             const movingVehicles = [];
             let activityEnabled = true;
             let activityTime = 0;
+            let activityObstacles = [];
+            let activityObstacleSignature = '';
+            let plannedObstacleRevision = -1;
 
             function addNpcHealthBar(group) {
                 const canvas = document.createElement('canvas');
@@ -2273,7 +2289,6 @@ import * as THREE from 'three';
             }
 
             const workerRoutes = [
-                route([[-27, 74], [-24, 52], [-22, 25], [-20, 15], [-42, 16], [-58, 25], [-53, 50]]),
                 route([[-17, 8], [3, 9], [26, 10], [55, 9], [61, 17], [49, 17], [19, 16]]),
                 route([[-64, 54], [-52, 52], [-37, 51], [-34, 31], [-40, 20], [-60, 22]])
             ];
@@ -2281,6 +2296,7 @@ import * as THREE from 'three';
                 const actor = {
                     mesh: worker(['#1677a8', '#287b55', '#d7633f', '#7652a4'][i % 4], i % 3 ? '#f6f7f0' : '#f4d34a'),
                     curve: workerRoutes[i % workerRoutes.length], phase: (i * .147) % 1, speed: .018 + (i % 3) * .003,
+                    clearance: .65,
                     dead: false
                 };
                 actor.mesh.userData.actor = actor;
@@ -2293,7 +2309,7 @@ import * as THREE from 'three';
             ];
             for (let i = 0; i < 2; i++) movingForklifts.push({
                 mesh: forklift(i ? '#ef9d2d' : '#efbd32'), curve: forkliftRoutes[i],
-                phase: i * .47, speed: i ? .010 : .008
+                phase: i * .47, speed: i ? .010 : .008, clearance: 3.2
             });
 
             const vehicleRoutes = [
@@ -2315,6 +2331,7 @@ import * as THREE from 'three';
                     phase: [0.08, .42, .72][index],
                     speed: [.014, .012, .013][index],
                     rideHeight: .25,
+                    clearance: 2.6,
                     wheelSpeed: 8,
                     headlight
                 });
@@ -2330,20 +2347,101 @@ import * as THREE from 'three';
                 phase: .31,
                 speed: .0065,
                 rideHeight: 0,
+                clearance: 4.2,
                 wheelSpeed: 5,
                 headlight: truckHeadlight
             });
 
+            function refreshActivityNavigation() {
+                const obstacles = [];
+                editableObjects.forEach(group => {
+                    const box = group.userData.editorBounds;
+                    if (!isGameplayCollider(group, box)) return;
+                    obstacles.push({
+                        minX: box.min.x, maxX: box.max.x,
+                        minZ: box.min.z, maxZ: box.max.z
+                    });
+                });
+                const signature = obstacles.map(box =>
+                    [box.minX, box.maxX, box.minZ, box.maxZ].map(n => n.toFixed(2)).join(',')).join(';');
+                plannedObstacleRevision = activityObstacleRevision;
+                if (signature === activityObstacleSignature) return;
+                activityObstacleSignature = signature;
+                activityObstacles = obstacles;
+                const navigators = new Map();
+                const loops = new Map();
+                for (const actor of [...workers, ...movingForklifts, ...movingVehicles]) {
+                    const clearance = actor.clearance || .6;
+                    if (!navigators.has(clearance)) navigators.set(clearance,
+                        createActivityNavigator(SITE.renderBounds, obstacles, clearance));
+                    const navigator = navigators.get(clearance);
+                    if (!loops.has(actor.curve)) loops.set(actor.curve, new Map());
+                    const curveLoops = loops.get(actor.curve);
+                    if (!curveLoops.has(clearance)) {
+                        const samples = Math.max(8, Math.ceil(actor.curve.getLength() / 5));
+                        const points = actor.curve.getSpacedPoints(samples).slice(0, -1)
+                            .map(point => ({ x: point.x, z: point.z }));
+                        curveLoops.set(clearance, navigator.buildLoop(points));
+                    }
+                    const previous = actor.navLoop;
+                    actor.navLoop = curveLoops.get(clearance);
+                    if (!actor.navLoop) {
+                        const safe = navigator.project(actor.mesh.position);
+                        actor.mesh.visible = !!safe;
+                        if (safe) actor.mesh.position.set(safe.x, actor.rideHeight || 0, safe.z);
+                        continue;
+                    }
+                    actor.mesh.visible = true;
+                    if (!previous) actor.navDistance = actor.phase * actor.navLoop.total;
+                    else {
+                        // Preserve the actor's location when an object moves in the editor.
+                        let closest = Infinity, distance = 0;
+                        const path = actor.navLoop;
+                        for (let i = 1; i < path.points.length; i++) {
+                            const a = path.points[i - 1], b = path.points[i];
+                            const dx = b.x - a.x, dz = b.z - a.z;
+                            const span = dx * dx + dz * dz;
+                            const t = span ? THREE.MathUtils.clamp(
+                                ((actor.mesh.position.x - a.x) * dx + (actor.mesh.position.z - a.z) * dz) / span, 0, 1) : 0;
+                            const x = a.x + dx * t, z = a.z + dz * t;
+                            const error = Math.hypot(actor.mesh.position.x - x, actor.mesh.position.z - z);
+                            if (error < closest) {
+                                closest = error;
+                                distance = path.lengths[i - 1] + Math.sqrt(span) * t;
+                            }
+                        }
+                        actor.navDistance = distance;
+                    }
+                }
+            }
+
+            function placeActivityActor(actor, dt) {
+                if (!actor.navLoop || !actor.mesh.visible) return;
+                const loop = actor.navLoop;
+                const nextDistance = (actor.navDistance + dt * actor.speed * actor.curve.getLength()) % loop.total;
+                const next = positionOnActivityLoop(loop, nextDistance / loop.total);
+                // An editor move can invalidate a path between navigation refreshes.
+                const blocked = activityObstacles.some(box =>
+                    next.x >= box.minX - actor.clearance && next.x <= box.maxX + actor.clearance &&
+                    next.z >= box.minZ - actor.clearance && next.z <= box.maxZ + actor.clearance);
+                if (blocked) {
+                    plannedObstacleRevision = -1;
+                    return;
+                }
+                actor.navDistance = nextDistance;
+                actor.mesh.position.set(next.x, actor.rideHeight || 0, next.z);
+                actor.mesh.rotation.y = next.heading;
+            }
+
             function updateActivity(dt) {
                 if (!activityEnabled) return;
                 activityTime += dt;
+                if (activityObstacleRevision !== plannedObstacleRevision) {
+                    refreshActivityNavigation();
+                }
                 workers.forEach((actor, index) => {
                     if (actor.dead) return;
-                    const t = (actor.phase + activityTime * actor.speed) % 1;
-                    const p = actor.curve.getPointAt(t);
-                    const tangent = actor.curve.getTangentAt(t);
-                    actor.mesh.position.copy(p);
-                    actor.mesh.rotation.y = Math.atan2(tangent.x, tangent.z);
+                    placeActivityActor(actor, dt);
                     const step = Math.sin(activityTime * 8 + index * .7);
                     actor.mesh.userData.arms[0].rotation.x = step * .72;
                     actor.mesh.userData.arms[1].rotation.x = -step * .72;
@@ -2352,29 +2450,18 @@ import * as THREE from 'three';
                     actor.mesh.position.y = Math.abs(step) * .035;
                 });
                 movingForklifts.forEach((actor, index) => {
-                    const t = (actor.phase + activityTime * actor.speed) % 1;
-                    const p = actor.curve.getPointAt(t);
-                    const tangent = actor.curve.getTangentAt(t);
-                    actor.mesh.position.copy(p);
-                    actor.mesh.rotation.y = Math.atan2(tangent.x, tangent.z);
+                    placeActivityActor(actor, dt);
                     actor.mesh.userData.wheels.forEach(w => w.rotation.x -= dt * 5);
                     actor.mesh.userData.carrier.position.y = .62 + Math.sin(activityTime * .8 + index) * .11;
                     actor.mesh.userData.beacon.material.emissiveIntensity = 1.1 + Math.sin(activityTime * 8 + index) * .8;
                 });
                 movingVehicles.forEach(actor => {
-                    const t = (actor.phase + activityTime * actor.speed) % 1;
-                    const p = actor.curve.getPointAt(t);
-                    const tangent = actor.curve.getTangentAt(t);
-                    p.y = actor.rideHeight;
-                    actor.mesh.position.copy(p);
-                    actor.mesh.rotation.y = Math.atan2(tangent.x, tangent.z);
+                    placeActivityActor(actor, dt);
                     actor.mesh.userData.wheels.forEach(wheel => {
                         wheel.rotation.x -= dt * actor.wheelSpeed;
                     });
                 });
             }
-
-            updateActivity(0);
 
             // ------------------------------------------------------------
             // Presentation environment: day, night, rain and atmospheric fog
@@ -2478,11 +2565,24 @@ import * as THREE from 'three';
             }
 
             function setVehicleLights(intensity) {
-                movingVehicles.forEach(actor => { actor.headlight.intensity = intensity; });
+                movingVehicles.forEach(actor => {
+                    actor.headlight.intensity = intensity;
+                    actor.headlight.visible = intensity > 0;
+                });
+            }
+
+            function setNightLights(lights, intensity) {
+                lights.forEach(light => {
+                    light.intensity = intensity;
+                    light.visible = intensity > 0;
+                });
             }
 
             function applyEnvironment(mode) {
                 environmentMode = mode;
+                sun.castShadow = mode === 'day';
+                moon.castShadow = mode === 'night';
+                renderer.shadowMap.needsUpdate = true;
                 const warmToggle = document.getElementById('warm');
                 if (mode !== 'day') warmToggle.checked = false;
                 rainField.visible = mode === 'rain';
@@ -2497,8 +2597,8 @@ import * as THREE from 'three';
                     skyFill.color.set('#3c5f91'); skyFill.intensity = .2;
                     moon.intensity = 2.4;
                     renderer.toneMappingExposure = 1.12;
-                    siteNightLights.forEach(light => { light.intensity = 24; });
-                    buildingNightLights.forEach(light => { light.intensity = 28; });
+                    setNightLights(siteNightLights, 24);
+                    setNightLights(buildingNightLights, 28);
                     setVehicleLights(3.4);
                     environmentStatus.textContent = 'กลางคืน · เปิดไฟอาคารและเสาไฟทั่วบริเวณ';
                 } else if (mode === 'rain') {
@@ -2509,8 +2609,8 @@ import * as THREE from 'three';
                     skyFill.color.set('#9cb6c4'); skyFill.intensity = .34;
                     moon.intensity = 0;
                     renderer.toneMappingExposure = .96;
-                    siteNightLights.forEach(light => { light.intensity = 2.8; });
-                    buildingNightLights.forEach(light => { light.intensity = 0; });
+                    setNightLights(siteNightLights, 2.8);
+                    setNightLights(buildingNightLights, 0);
                     setVehicleLights(2.5);
                     environmentStatus.textContent = 'ฝนตก · พื้นผิวเปียกและทัศนวิสัยลดลง';
                 } else if (mode === 'fog') {
@@ -2521,8 +2621,8 @@ import * as THREE from 'three';
                     skyFill.color.set('#d9e5e8'); skyFill.intensity = .4;
                     moon.intensity = 0;
                     renderer.toneMappingExposure = 1.02;
-                    siteNightLights.forEach(light => { light.intensity = 1.2; });
-                    buildingNightLights.forEach(light => { light.intensity = 0; });
+                    setNightLights(siteNightLights, 1.2);
+                    setNightLights(buildingNightLights, 0);
                     setVehicleLights(2.1);
                     environmentStatus.textContent = 'หมอก · บรรยากาศนุ่มและมีมิติ';
                 } else {
@@ -2533,8 +2633,8 @@ import * as THREE from 'three';
                     skyFill.color.set('#b8dcff'); skyFill.intensity = .58;
                     moon.intensity = 0;
                     renderer.toneMappingExposure = 1.12;
-                    siteNightLights.forEach(light => { light.intensity = 0; });
-                    buildingNightLights.forEach(light => { light.intensity = 0; });
+                    setNightLights(siteNightLights, 0);
+                    setNightLights(buildingNightLights, 0);
                     setVehicleLights(0);
                     environmentStatus.textContent = 'กลางวัน · แสงสดใสสำหรับงานพรีเซนต์';
                 }
@@ -3031,6 +3131,7 @@ import * as THREE from 'three';
             }
 
             function setGameMode(enabled) {
+                if (enabled) closeInterior({ restoreCamera: false });
                 if (enabled && editorMode) setEditorMode(false);
                 if (enabled && camera !== perspectiveCamera) {
                     setActiveCamera(perspectiveCamera);
@@ -3478,6 +3579,7 @@ import * as THREE from 'three';
             // ------------------------------------------------------------
             // In-page object editor (move / rotate / add / duplicate / delete)
             // ------------------------------------------------------------
+            const viewerOnly = window.TDK_VIEWER_ONLY === true;
             let editorMode = false;
             let selectedEditable = null;
             const selectedEditables = new Set();
@@ -3490,6 +3592,12 @@ import * as THREE from 'three';
             let editorTransformPointerActive = false;
             const editorPanel = document.getElementById('editor-panel');
             const editorToggle = document.getElementById('editor-toggle');
+            if (viewerOnly) {
+                editorToggle.hidden = true;
+                editorToggle.disabled = true;
+                editorToggle.setAttribute('aria-hidden', 'true');
+                document.body.classList.add('viewer-only');
+            }
             const editorSelected = document.getElementById('editor-selected');
             const editorStatus = document.getElementById('editor-status');
             const editorX = document.getElementById('editor-x');
@@ -3614,7 +3722,7 @@ import * as THREE from 'three';
                 // Every blocker is now represented by a live object-space bounding box.
                 // Clearing the old fixed boxes prevents invisible collisions after a move/delete.
                 staticColliders.length = 0;
-                window.TDK_OBJECT_EDITOR = { editableObjects, registered };
+                if (!viewerOnly) window.TDK_OBJECT_EDITOR = { editableObjects, registered };
             }
 
             const anchoredBuildingLabels = [];
@@ -3678,6 +3786,8 @@ import * as THREE from 'three';
                 if (!entry.id || editableObjects.has(entry.id)) return;
                 createEditorObject(entry.type || 'blueCrate', entry.id, new THREE.Vector3(), false, entry.sourceId);
             });
+            refreshActivityNavigation();
+            updateActivity(0);
 
             function serializeTransform(group) {
                 group.updateWorldMatrix(true, false);
@@ -3696,19 +3806,29 @@ import * as THREE from 'three';
                 };
             }
 
-            function saveEditorLayout(message = 'บันทึกตำแหน่งแล้ว') {
+            function captureEditorLayoutState() {
                 const objects = {};
                 const added = [];
                 editableObjects.forEach((group, id) => {
                     objects[id] = serializeTransform(group);
                     if (!group.userData.editor.builtin) added.push({ id, type: group.userData.editor.type, sourceId: group.userData.editor.sourceId });
                 });
-                const state = {
-                    revision: EDITOR_LAYOUT_REVISION, objects, added,
+                return {
+                    revision: EDITOR_LAYOUT_REVISION,
+                    canonicalBaseline: window.TDK_CANONICAL_LAYOUT_ID,
+                    objects, added,
                     deleted: [...deletedBuiltinObjects], cuts: [...storedEditorLayout.cuts]
                 };
+            }
+
+            function saveEditorLayout(message = 'บันทึกตำแหน่งแล้ว', strict = false) {
+                const state = captureEditorLayoutState();
                 try { localStorage.setItem(EDITOR_STORAGE_KEY, JSON.stringify(state)); }
-                catch (error) { editorStatus.textContent = 'บันทึกไม่สำเร็จ กรุณาส่งออก JSON เพื่อเก็บงาน'; return state; }
+                catch (error) {
+                    editorStatus.textContent = 'บันทึกไม่สำเร็จ กรุณาส่งออก JSON เพื่อเก็บงาน';
+                    if (strict) throw new Error('บันทึกผังลงเบราว์เซอร์ไม่สำเร็จ จึงยังไม่ส่งออก Three.js', { cause: error });
+                    return state;
+                }
                 storedEditorLayout = state;
                 editorStatus.textContent = message;
                 refreshObjectList();
@@ -3747,6 +3867,8 @@ import * as THREE from 'three';
                 editorName.disabled = count !== 1;
                 editorName.value = count === 1 ? selectedEditable.userData.editor.label : '';
                 for (const id of ['duplicate','delete','shrink','grow','focus']) document.getElementById(`editor-${id}`).disabled = !target;
+                document.getElementById('editor-view-interior').disabled = count !== 1 ||
+                    !selectedEditable.userData.editor.id.startsWith('building-');
                 wallCutButton.disabled = count !== 1 || !selectedEditable.userData.editor.cuttable;
                 editorFront.disabled = editorBack.disabled = !count;
                 editorFront.classList.toggle('active', count > 0 &&
@@ -4124,6 +4246,7 @@ import * as THREE from 'three';
                 const parent = group.parent;
                 if (data.builtin) deletedBuiltinObjects.add(data.id);
                 editableObjects.delete(data.id);
+                activityObstacleRevision++;
                 unregisterPickMeshes(group);
                 group.removeFromParent();
                 return { group, parent };
@@ -4141,6 +4264,8 @@ import * as THREE from 'three';
             }
 
             function setEditorMode(enabled) {
+                if (viewerOnly) return false;
+                if (enabled) closeInterior();
                 if (enabled && gameMode) setGameMode(false);
                 editorMode = enabled;
                 document.body.classList.toggle('editing', enabled);
@@ -4156,6 +4281,7 @@ import * as THREE from 'three';
                 if (!enabled) { finishWallCut(); saveEditorLayout(); selectEditable(null); }
                 else { refreshObjectList(); updateEditorFields(); setEditorTransformMode(transformControls.mode); }
                 editorStatus.textContent = enabled ? 'เลือกวัตถุเพื่อเริ่มแก้ไข · บันทึกอัตโนมัติ' : 'บันทึกและปิดโหมดแก้ไขแล้ว';
+                return true;
             }
 
             function deleteSelectedEditable() {
@@ -4414,12 +4540,19 @@ import * as THREE from 'three';
 
             document.getElementById('object-search').addEventListener('input', refreshObjectList);
             document.getElementById('editor-focus').addEventListener('click', focusEditorSelection);
+            document.getElementById('editor-view-interior').addEventListener('click', () => {
+                const id = selectedEditable?.userData.editor.id;
+                if (!id?.startsWith('building-')) return;
+                setEditorMode(false);
+                openInterior(id.slice('building-'.length), { returnToEditor: true });
+            });
             document.getElementById('editor-scale').addEventListener('click', () => setEditorTransformMode('scale'));
             document.getElementById('editor-shrink').addEventListener('click', () => scaleEditorSelection(.9));
             document.getElementById('editor-grow').addEventListener('click', () => scaleEditorSelection(1.1));
             document.getElementById('editor-undo').addEventListener('click', undoEditorChange);
             document.getElementById('editor-redo').addEventListener('click', redoEditorChange);
             document.getElementById('editor-done').addEventListener('click', () => setEditorMode(false));
+            if (!viewerOnly && startupParams.get('editor') === '1') setEditorMode(true);
             document.getElementById('editor-panels').addEventListener('click', event => {
                 const collapsed = document.body.classList.toggle('panels-collapsed');
                 event.currentTarget.textContent = collapsed ? 'แสดงแผง' : 'ซ่อนแผง';
@@ -4491,6 +4624,39 @@ import * as THREE from 'three';
                 link.click();
                 setTimeout(() => URL.revokeObjectURL(url), 1000);
             });
+            const repairBaselineButton = document.getElementById('editor-repair-baseline');
+            function showBaselineRepair(show) {
+                if (!repairBaselineButton) return;
+                repairBaselineButton.hidden = !show;
+                repairBaselineButton.style.display = show ? '' : 'none';
+            }
+            repairBaselineButton?.addEventListener('click', async () => {
+                repairBaselineButton.disabled = true;
+                try {
+                    const response = await fetch('./snapshots/baseline-2026-11-05/layout.json', { cache: 'no-store' });
+                    if (!response.ok) throw new Error(`โหลด baseline ไม่สำเร็จ (${response.status})`);
+                    const baseline = await response.json();
+                    const current = captureEditorLayoutState();
+                    const repair = prepareBaselineRepair(current, baseline, window.TDK_CANONICAL_LAYOUT_ID);
+                    const audit = auditLayoutAgainstBaseline(current, baseline);
+                    const dropped = repair.droppedIds.length;
+                    const message = `พบข้อมูลเดิมต่างจาก baseline ${audit.differences.length} จุด\n` +
+                        `จะสำรองผังปัจจุบัน แล้วคืนข้อมูลเดิมตาม baseline โดยเก็บวัตถุใหม่ ${repair.keptCount} ชิ้น` +
+                        (dropped ? `\nมี ID ที่ไม่ได้ลงทะเบียนเป็นวัตถุใหม่ ${dropped} ชิ้น; ข้อมูลเหล่านี้อยู่ในสำรอง` : '') +
+                        '\nหลังโหลดหน้าใหม่ ให้กด Export Map อีกครั้ง ตกลงหรือไม่?';
+                    if (!confirm(message)) return;
+                    const backupKey = `${EDITOR_STORAGE_KEY}-backup-before-repair-${Date.now()}`;
+                    localStorage.setItem(backupKey, JSON.stringify(current));
+                    localStorage.setItem(EDITOR_STORAGE_KEY, JSON.stringify(repair.layout));
+                    clearTimeout(editorSaveTimer);
+                    location.reload();
+                } catch (error) {
+                    console.error('Baseline repair failed', error);
+                    editorStatus.textContent = error.message || 'คืนข้อมูล baseline ไม่สำเร็จ';
+                } finally {
+                    repairBaselineButton.disabled = false;
+                }
+            });
             document.getElementById('editor-export-threejs').addEventListener('click', async event => {
                 const button = event.currentTarget;
                 const originalLabel = button.textContent;
@@ -4498,7 +4664,7 @@ import * as THREE from 'three';
                 button.textContent = 'กำลังตรวจและสร้างไฟล์…';
                 editorStatus.textContent = 'กำลังเทียบวัตถุเดิมกับ baseline ที่ล็อกไว้';
                 try {
-                    const state = saveEditorLayout('กำลังเตรียม Three.js export');
+                    const state = captureEditorLayoutState();
                     const [baselineResponse, templateResponse] = await Promise.all([
                         fetch('./snapshots/baseline-2026-11-05/layout.json', { cache: 'no-store' }),
                         fetch('./tdk-factory-map.js', { cache: 'no-store' })
@@ -4508,9 +4674,12 @@ import * as THREE from 'three';
                     const [baseline, template] = await Promise.all([baselineResponse.json(), templateResponse.text()]);
                     const audit = auditLayoutAgainstBaseline(state, baseline);
                     if (!audit.ok) {
+                        showBaselineRepair(true);
                         const sample = audit.differences.slice(0, 3).join(', ');
-                        throw new Error(`ยกเลิก export: พบข้อมูลเดิมต่างจาก baseline ${audit.differences.length} จุด — ${sample}`);
+                        throw new Error(`ยกเลิก export: พบข้อมูลเดิมต่างจาก baseline ${audit.differences.length} จุด — ${sample} · ใช้ปุ่มสำรองข้อมูลและคืนวัตถุเดิมตาม baseline`);
                     }
+                    showBaselineRepair(false);
+                    saveEditorLayout('ตรวจ baseline ผ่านแล้ว กำลังสร้าง Three.js export', true);
                     const bundle = embedLayoutInStandalone(template, state, currentCameraJSON());
                     const url = URL.createObjectURL(new Blob([bundle], { type: 'text/javascript;charset=utf-8' }));
                     const link = document.createElement('a');
@@ -4554,6 +4723,141 @@ import * as THREE from 'three';
 
             let transition = null;
             let activeViewKey = Object.hasOwn(views, startupViewKey) ? startupViewKey : 'aerial';
+            const interiorPanel = document.getElementById('interior-panel');
+            const interiorZones = document.getElementById('interior-zones');
+            const interiorDetail = document.getElementById('interior-detail');
+            const buildingGroupById = new Map(BUILDINGS.map(item => [item.id,
+                warehouseGroups[item.id] || (item.id === 'main_office' ? office : canteen)]));
+
+            function showInteriorZone(id) {
+                if (!activeInterior) return;
+                const zone = activeInterior.model.plan.zones.find(item => item.id === id);
+                if (!zone) return;
+                activeInterior.model.setSelected(id);
+                for (const button of interiorZones.querySelectorAll('button')) {
+                    const selected = button.dataset.zoneId === id;
+                    button.classList.toggle('active', selected);
+                    button.setAttribute('aria-pressed', String(selected));
+                }
+                interiorDetail.replaceChildren();
+                const title = document.createElement('strong');
+                title.textContent = zone.name;
+                const description = document.createElement('p');
+                description.textContent = zone.detail;
+                interiorDetail.append(title, description);
+            }
+
+            function closeInterior({ restoreCamera = true } = {}) {
+                if (!activeInterior) return false;
+                const { exterior, model, previousCamera, returnToEditor } = activeInterior;
+                activeInterior = null;
+                scene.remove(model.root);
+                model.dispose();
+                exterior.visible = true;
+                interiorPanel.hidden = true;
+                document.body.classList.remove('interior-active');
+                renderer.shadowMap.needsUpdate = true;
+                controls.minDistance = previousCamera.minDistance;
+                controls.maxDistance = previousCamera.maxDistance;
+                controls.enableRotate = previousCamera.enableRotate;
+                controls.enablePan = previousCamera.enablePan;
+                if (restoreCamera) {
+                    if (previousCamera.top) {
+                        setActiveCamera(topCamera);
+                        topCamera.position.copy(previousCamera.position);
+                        topCamera.zoom = previousCamera.zoom;
+                        topCamera.updateProjectionMatrix();
+                        controls.target.copy(previousCamera.target);
+                        controls.enableRotate = false;
+                        controls.update();
+                    } else {
+                        transition = {
+                            time: performance.now(), duration: 850,
+                            fromPosition: perspectiveCamera.position.clone(),
+                            fromTarget: controls.target.clone(),
+                            fromFov: perspectiveCamera.fov,
+                            toPosition: previousCamera.position,
+                            toTarget: previousCamera.target,
+                            toFov: previousCamera.fov
+                        };
+                    }
+                }
+                if (restoreCamera && returnToEditor) setEditorMode(true);
+                return true;
+            }
+
+            function openInterior(id, { returnToEditor = false } = {}) {
+                if (editorMode || gameMode || overlayEnabled || !BUILDING_INTERIORS[id]) return false;
+                if (activeInterior?.id === id) return true;
+                if (activeInterior) closeInterior({ restoreCamera: false });
+                const building = BUILDING_BY_ID[id];
+                const exterior = buildingGroupById.get(id);
+                if (!building || !exterior || !exterior.visible) return false;
+                const model = createBuildingInterior(THREE, building, SITE.renderUnitsPerSiteUnit);
+                const previousCamera = {
+                    top: camera === topCamera,
+                    position: camera.position.clone(),
+                    target: controls.target.clone(),
+                    fov: perspectiveCamera.fov,
+                    zoom: topCamera.zoom,
+                    minDistance: controls.minDistance,
+                    maxDistance: controls.maxDistance,
+                    enableRotate: controls.enableRotate,
+                    enablePan: controls.enablePan
+                };
+                model.root.position.copy(exterior.position);
+                model.root.quaternion.copy(exterior.quaternion);
+                model.root.scale.copy(exterior.scale);
+                scene.add(model.root);
+                exterior.visible = false;
+                activeInterior = { id, exterior, model, previousCamera, returnToEditor };
+                interiorPanel.hidden = false;
+                document.body.classList.add('interior-active');
+                document.getElementById('interior-title').textContent = model.plan.title;
+                document.getElementById('interior-subtitle').textContent = model.plan.subtitle;
+                interiorZones.replaceChildren();
+                for (const zone of model.plan.zones) {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'interior-zone';
+                    button.dataset.zoneId = zone.id;
+                    button.textContent = zone.name;
+                    button.addEventListener('click', () => showInteriorZone(zone.id));
+                    interiorZones.append(button);
+                }
+                showInteriorZone(model.plan.zones[0].id);
+                model.root.updateMatrixWorld(true);
+                const center = model.root.localToWorld(new THREE.Vector3(0, .8, 0));
+                const span = Math.max(building.size.width, building.size.depth) * SITE.renderUnitsPerSiteUnit;
+                const destination = center.clone().add(new THREE.Vector3(span * .36, span * 1.18, span * .48));
+                if (camera !== perspectiveCamera) {
+                    setActiveCamera(perspectiveCamera);
+                    perspectiveCamera.position.copy(destination);
+                    controls.target.copy(center);
+                    perspectiveCamera.fov = 44;
+                    perspectiveCamera.updateProjectionMatrix();
+                    transition = null;
+                } else {
+                    transition = {
+                        time: performance.now(), duration: 1100,
+                        fromPosition: perspectiveCamera.position.clone(),
+                        fromTarget: controls.target.clone(),
+                        fromFov: perspectiveCamera.fov,
+                        toPosition: destination, toTarget: center, toFov: 44
+                    };
+                }
+                controls.enableRotate = true;
+                controls.enablePan = true;
+                controls.minDistance = 8;
+                controls.maxDistance = Math.max(80, span * 2.5);
+                controls.autoRotate = false;
+                document.getElementById('rotate').checked = false;
+                renderer.shadowMap.needsUpdate = true;
+                return true;
+            }
+
+            document.getElementById('interior-close').addEventListener('click', () => closeInterior());
+            document.getElementById('interior-back').addEventListener('click', () => closeInterior());
             document.querySelectorAll('.view').forEach(button => {
                 button.classList.toggle('active', button.dataset.view === activeViewKey);
             });
@@ -4596,6 +4900,7 @@ import * as THREE from 'three';
 
             function activateView(viewKey, { animate = true } = {}) {
                 if (!Object.hasOwn(views, viewKey)) return false;
+                closeInterior({ restoreCamera: false });
                 if (gameMode) setGameMode(false);
                 document.querySelectorAll('.view').forEach(button => {
                     button.classList.toggle('active', button.dataset.view === viewKey);
@@ -4675,6 +4980,8 @@ import * as THREE from 'three';
                 },
                 getCamera: () => camera,
                 getObject: id => editableObjects.get(id) || null,
+                openInterior, closeInterior,
+                get activeInterior() { return activeInterior?.id || null; },
                 get activeView() { return activeViewKey; }
             };
 
@@ -4879,6 +5186,10 @@ import * as THREE from 'three';
 
             window.addEventListener('keydown', event => {
                 const typing = /INPUT|SELECT|TEXTAREA/.test(event.target?.tagName || '');
+                if (event.code === 'Escape' && activeInterior && !typing) {
+                    closeInterior();
+                    return;
+                }
                 if (editorMode && !typing) {
                     if (event.code === 'KeyG' && !event.ctrlKey && !event.metaKey) setEditorTransformMode('translate');
                     if (event.code === 'KeyR' && !event.ctrlKey && !event.metaKey) setEditorTransformMode('rotate');
@@ -5036,6 +5347,13 @@ import * as THREE from 'three';
                     -((event.clientY - rect.top) / rect.height) * 2 + 1
                 );
                 raycaster.setFromCamera(pointer, camera);
+                if (activeInterior) {
+                    const zoneHit = raycaster.intersectObjects(activeInterior.model.pickables, false)[0];
+                    if (zoneHit?.object.userData.interiorZone) {
+                        showInteriorZone(zoneHit.object.userData.interiorZone);
+                    }
+                    return;
+                }
                 const hit = raycaster.intersectObjects(meshesToPick, false)[0];
                 if (editorMode) {
                     if (wallCutMode) {
@@ -5059,6 +5377,15 @@ import * as THREE from 'three';
                     );
                     return;
                 }
+                const buildingId = [...buildingGroupById].find(([, group]) => {
+                    let node = hit?.object;
+                    while (node) {
+                        if (node === group) return true;
+                        node = node.parent;
+                    }
+                    return false;
+                })?.[0];
+                if (buildingId && openInterior(buildingId)) return;
                 if (hit?.object.userData.info) {
                     const info = hit.object.userData.info;
                     document.getElementById('info-title').textContent = info.title;
@@ -5095,8 +5422,9 @@ import * as THREE from 'three';
                 perspectiveCamera.aspect = aspect;
                 perspectiveCamera.updateProjectionMatrix();
                 fitTopCamera(views.top);
-                renderer.setPixelRatio(Math.min(devicePixelRatio, innerWidth < 700 ? 1.5 : 2.25));
+                renderQuality.resize(viewportSize.width, viewportSize.height, innerWidth < 700);
                 renderer.setSize(viewportSize.width, viewportSize.height, false);
+                renderer.shadowMap.needsUpdate = true;
                 document.getElementById('game-pad').classList.toggle('show', gameMode && innerWidth <= 900);
             });
 
@@ -5104,9 +5432,12 @@ import * as THREE from 'three';
             // Render loop
             // ------------------------------------------------------------
             const clock = new THREE.Clock();
+            let shadowRefreshElapsed = 0;
 
             renderer.setAnimationLoop(() => {
-                const dt = Math.min(clock.getDelta(), .05);
+                const frameSeconds = clock.getDelta();
+                const dt = Math.min(frameSeconds, .05);
+                if (!document.hidden) renderQuality.sample(frameSeconds);
                 if (transition) {
                     const t = Math.min((performance.now() - transition.time) / transition.duration, 1);
                     const ease = t * t * (3 - 2 * t);
@@ -5129,6 +5460,11 @@ import * as THREE from 'three';
                 updateActivity(dt);
                 updateWeather(dt);
                 updatePlayer(dt);
+                shadowRefreshElapsed += frameSeconds;
+                if (shadowRefreshElapsed >= 1 / 30) {
+                    renderer.shadowMap.needsUpdate = true;
+                    shadowRefreshElapsed %= 1 / 30;
+                }
                 if (!gameMode) controls.update(dt);
                 renderer.render(scene, camera);
             });

@@ -1,4 +1,5 @@
 @media(max-width:700px) {
+            .interior-panel.panel { top: auto; right: 10px; bottom: 10px; width: min(320px, calc(100vw - 20px)); max-height: min(53vh, 440px); padding: 13px; }
             header {
                 top: 10px;
                 left: 10px;

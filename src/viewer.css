@@ -549,6 +549,42 @@
             line-height: 1.8
         }
 
+        .interior-panel.panel {
+            position: absolute;
+            top: 24px;
+            right: 22px;
+            z-index: 15;
+            width: min(330px, calc(100vw - 44px));
+            max-height: calc(100vh - 48px);
+            overflow-y: auto;
+            padding: 20px;
+            color: #e9f3f8;
+            background: linear-gradient(150deg, #102e42f2, #102337f5);
+            border: 1px solid #71b1d777;
+            box-shadow: 0 20px 54px #08152288;
+            backdrop-filter: blur(18px);
+        }
+
+        .interior-panel[hidden] { display: none; }
+        body.interior-active .viewer-controls,
+        body.interior-active .info,
+        body.interior-active .hint { visibility: hidden; pointer-events: none; }
+        .interior-panel-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+        .interior-eyebrow { color: #6dd4ed; font-size: 10px; font-weight: 800; letter-spacing: .15em; }
+        .interior-panel h2 { margin: 6px 0 2px; font-size: 21px; line-height: 1.2; }
+        .interior-panel-head p { margin: 0; color: #abc7d6; font-size: 12px; }
+        #interior-close { flex: 0 0 32px; width: 32px; height: 32px; border: 1px solid #9cc4d866; border-radius: 50%; color: #e9f3f8; background: #ffffff18; font-size: 23px; line-height: 1; cursor: pointer; }
+        .interior-guide { margin: 18px 0 11px; color: #d6e4ec; font-size: 11px; line-height: 1.6; }
+        .interior-zones { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+        .interior-zone { min-height: 40px; padding: 8px 9px; text-align: left; border-radius: 8px; border: 1px solid #8cb2c544; background: #ffffff0d; color: #e1edf3; font: inherit; font-size: 11px; cursor: pointer; }
+        .interior-zone:hover, .interior-zone:focus-visible { border-color: #6dd4ed; background: #4cbbdb27; }
+        .interior-zone.active { border-color: #6dd4ed; background: #1e77927a; color: #fff; }
+        .interior-detail { min-height: 64px; margin-top: 15px; padding: 12px 13px; border-left: 3px solid #6dd4ed; border-radius: 4px 8px 8px 4px; background: #ffffff13; }
+        .interior-detail strong { display: block; font-size: 13px; color: #fff; }
+        .interior-detail p { margin: 5px 0 0; font-size: 11px; line-height: 1.6; color: #c5dae5; }
+        .interior-source { margin: 14px 0; font-size: 10px; line-height: 1.55; color: #a6bfcb; }
+        .interior-back { width: 100%; padding: 10px; border: 1px solid #7cd5ee; border-radius: 8px; background: #157da6; color: white; font-weight: 700; cursor: pointer; }
+
         .hint {
             position: absolute;
             bottom: 23px;

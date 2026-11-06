@@ -2,6 +2,13 @@
   "name": "tdk-v7-editor-checks",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node editor.test.mjs && node threejs-export.test.mjs" },
-  "devDependencies": { "jsdom": "26.1.0", "three": "0.169.0" }
+  "scripts": {
+    "test": "node editor.test.mjs && node render-quality.test.mjs && node building-interiors.test.mjs && node threejs-export.test.mjs && node canonical-layout-loader.test.mjs && node entrypoints.test.mjs && node build-standalone.mjs --check",
+    "build:standalone": "node build-standalone.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "jsdom": "26.1.0",
+    "three": "0.169.0"
+  }
 }

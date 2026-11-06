@@ -71,6 +71,33 @@ export function auditLayoutAgainstBaseline(layout, baseline) {
     return { ok: differences.length === 0, differences, addedCount: newObjectIds.length };
 }
 
+/** Prepare an explicit local repair without changing the locked snapshot. */
+export function prepareBaselineRepair(layout, baseline, canonicalBaselineId) {
+    const baselineIds = new Set(Object.keys(baseline.objects || {}));
+    const keptIds = new Set();
+    const newAdded = [];
+    const newObjects = {};
+    for (const entry of layout.added || []) {
+        const id = addedId(entry);
+        if (!id || baselineIds.has(id) || keptIds.has(id) || !Object.hasOwn(layout.objects || {}, id)) continue;
+        keptIds.add(id);
+        newAdded.push(structuredClone(entry));
+        newObjects[id] = structuredClone(layout.objects[id]);
+    }
+    const droppedIds = Object.keys(layout.objects || {}).filter(id => !baselineIds.has(id) && !keptIds.has(id));
+    const repaired = {
+        revision: baseline.revision,
+        canonicalBaseline: canonicalBaselineId,
+        objects: { ...structuredClone(baseline.objects), ...newObjects },
+        added: [...structuredClone(baseline.added), ...newAdded],
+        deleted: structuredClone(baseline.deleted),
+        cuts: structuredClone(baseline.cuts)
+    };
+    const audit = auditLayoutAgainstBaseline(repaired, baseline);
+    if (!audit.ok) throw new Error(`Baseline repair failed: ${audit.differences.join(', ')}`);
+    return { layout: repaired, keptCount: newAdded.length, droppedIds };
+}
+
 /** Replace only the embedded data header; the self-contained Three.js runtime stays unchanged. */
 export function embedLayoutInStandalone(template, layout, camera) {
     const start = template.indexOf(EMBEDDED_LAYOUT_START);

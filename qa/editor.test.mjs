@@ -6,6 +6,7 @@ import * as RealThree from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { auditLayoutAgainstBaseline as auditExportLayout } from '../src/threejs-export.js';
+import { positionOnActivityLoop } from '../src/activity-navigation.js';
 
 // Integration harness: real geometry and controls, DOM events and storage;
 // only canvas rasterization and the GPU renderer are stubbed. This is not visual QA.
@@ -15,6 +16,9 @@ const movement = readFileSync(new URL('../src/game-controls.js', import.meta.url
 const threejsExport = readFileSync(new URL('../src/threejs-export.js', import.meta.url), 'utf8').replaceAll('export ', '');
 const moduleSource = [
     threejsExport,
+    readFileSync(new URL('../src/activity-navigation.js', import.meta.url), 'utf8').replaceAll('export ', ''),
+    readFileSync(new URL('../src/render-quality.js', import.meta.url), 'utf8').replaceAll('export ', ''),
+    readFileSync(new URL('../src/building-interiors.js', import.meta.url), 'utf8').replaceAll('export ', ''),
     readFileSync(new URL('../src/factory-data.js', import.meta.url), 'utf8')
         .replace(/^\s*import .*;$/gm, '')
         .replace(/^([ \t]*)export /gm, '$1'),
@@ -22,16 +26,20 @@ const moduleSource = [
         .replace(/^\s*import .*;$/gm, '')
 ].join('\n');
 const errors = [];
-function boot(saved, savedCamera, view = '') {
-    const suffix = view ? `?view=${encodeURIComponent(view)}` : '';
+function boot(saved, savedCamera, view = '', viewerOnly = false, openEditor = false) {
+    const params = new URLSearchParams();
+    if (view) params.set('view', view);
+    if (openEditor) params.set('editor', '1');
+    const suffix = params.size ? `?${params}` : '';
     const dom = new JSDOM(html, { url: `http://127.0.0.1:5500/v7/index.html${suffix}`, runScripts: 'outside-only', pretendToBeVisual: true });
     const win = dom.window;
+    win.TDK_VIEWER_ONLY = viewerOnly;
     const context = dom.getInternalVMContext();
     win.HTMLCanvasElement.prototype.getContext = () => new Proxy({}, { get: (_, key) =>
         key === 'measureText' ? text => ({ width: text.length * 12 }) : () => {} });
     class Renderer {
         constructor() { this.domElement = win.document.createElement('canvas'); this.shadowMap = {}; this.capabilities = { getMaxAnisotropy: () => 1 }; }
-        setSize() {} setPixelRatio() {} setAnimationLoop(fn) { this.frame = fn; } render() {}
+        setSize() {} setPixelRatio(value) { this.pixelRatio = value; } setAnimationLoop(fn) { this.frame = fn; } render() {}
     }
     win.THREE = { ...RealThree, WebGLRenderer: Renderer };
     win.OrbitControls = OrbitControls;
@@ -51,8 +59,13 @@ function boot(saved, savedCamera, view = '') {
         get skylightMaterial() { return M.skylight; },
         get buildingNightLights() { return buildingNightLights; },
         get siteNightLights() { return siteNightLights; },
+        get sun() { return sun; }, get moon() { return moon; },
+        get renderQuality() { return renderQuality; },
         get lampEmitterMaterial() { return lampEmitterMaterial; },
         get player() { return player; }, get gameMode() { return gameMode; },
+        get activityActors() { return [...workers, ...movingForklifts, ...movingVehicles]; },
+        get activityObstacles() { return activityObstacles; },
+        updateActivity,
         get objects() { return editableObjects; } };`;
     vm.runInContext(config + movement + moduleSource.replace("            loading.style.opacity = '0';", exposed + "\n            loading.style.opacity = '0';"), context);
     assert.deepEqual(errors, [], 'Scene should initialize without runtime errors');
@@ -69,6 +82,27 @@ function near(a, b) { assert.ok(Math.abs(a - b) < 1e-6, `${a} ≈ ${b}`); }
 const env = boot();
 const { api, doc, win } = env;
 api.renderer.frame();
+const objectCountBeforeInteriors = api.objects.size;
+const layoutBeforeInteriors = win.localStorage.getItem('tdk-v7-object-layout-v1');
+for (const id of ['main_office', 'doke1_west', 'doke1_store', 'doke2_assy', 'rack_dome', 'canteen']) {
+    const exterior = api.objects.get(`building-${id}`);
+    assert.equal(win.TDK_FACTORY_MAP.openInterior(id), true, `${id} should open`);
+    assert.equal(win.TDK_FACTORY_MAP.activeInterior, id);
+    assert.equal(exterior.visible, false, `${id} exterior should be hidden for cutaway`);
+    assert.equal(doc.getElementById('interior-panel').hidden, false);
+    assert.ok(doc.querySelectorAll('#interior-zones button').length >= 3);
+    assert.ok(api.scene.getObjectByName(`Interior presentation · ${id}`));
+    doc.querySelectorAll('#interior-zones button')[1].click();
+    assert.equal(doc.querySelectorAll('#interior-zones button.active').length, 1);
+    click(env, 'interior-back');
+    assert.equal(win.TDK_FACTORY_MAP.activeInterior, null);
+    assert.equal(exterior.visible, true, `${id} exterior should return`);
+    assert.equal(doc.getElementById('interior-panel').hidden, true);
+    assert.equal(api.scene.getObjectByName(`Interior presentation · ${id}`), undefined);
+}
+assert.equal(api.objects.size, objectCountBeforeInteriors, 'Presentation rooms must not become editor objects');
+assert.equal(win.localStorage.getItem('tdk-v7-object-layout-v1'), layoutBeforeInteriors,
+    'Opening interiors must not change the saved map');
 assert.equal(win.TDK_LAYOUT.layoutWarnings.length, 0, 'Building footprints must not overlap');
 const securityBooth = api.objects.get('security-booth');
 const cardAccess = api.objects.get('security-card-access');
@@ -105,7 +139,16 @@ assert.equal(api.buildingNightLights.length, win.TDK_LAYOUT.BUILDINGS.length * 2
     'Every building should have two night lights');
 assert.equal(api.scene.getObjectByName('Factory streetlights').children.filter(object => object.isLight).length,
     api.siteNightLights.length, 'Every streetlight should have a working point light');
+assert.equal(api.sun.shadow.mapSize.x, 2048);
+assert.equal(api.renderer.shadowMap.autoUpdate, false);
+assert.equal(api.renderer.shadowMap.needsUpdate, true);
+assert.equal(api.sun.castShadow, true);
+assert.equal(api.moon.castShadow, false);
+assert.ok(api.siteNightLights.every(light => !light.visible));
 doc.querySelector('[data-environment="night"]').click();
+assert.equal(api.sun.castShadow, false);
+assert.equal(api.moon.castShadow, true);
+assert.ok(api.siteNightLights.every(light => light.visible));
 assert.ok(api.buildingNightLights.every(light => light.intensity === 28),
     'Night mode should brightly illuminate every building');
 assert.ok(api.siteNightLights.every(light => light.intensity === 24),
@@ -113,6 +156,9 @@ assert.ok(api.siteNightLights.every(light => light.intensity === 24),
 assert.equal(api.lampEmitterMaterial.emissiveIntensity, 3.2,
     'Building and streetlight fixtures should glow at night');
 doc.querySelector('[data-environment="day"]').click();
+assert.equal(api.sun.castShadow, true);
+assert.equal(api.moon.castShadow, false);
+assert.ok(api.siteNightLights.every(light => !light.visible));
 assert.ok(api.buildingNightLights.every(light => light.intensity === 0) &&
     api.siteNightLights.every(light => light.intensity === 0),
     'Building and streetlights should switch off in day mode');
@@ -182,13 +228,34 @@ assert.ok(api.objects.get('building-doke1_west').getObjectByName('TDK company si
     'Doke 1 should display the TDK company sign on its front facade');
 assert.ok(doke2.getObjectByName('TDK company sign'),
     'Doke 2 should display the TDK company sign on its front facade');
+const doke2Sign = doke2.getObjectByName('TDK company sign');
+const doke2Eave = buildings.doke2_assy.size.height * 1.54 + .45;
+const doke2RoofRise = buildings.doke2_assy.roof.rise * 1.54;
+const doke2RoofWidth = buildings.doke2_assy.size.width * 1.54 + 1.8;
+const doke2RoofAtSignEdge = doke2Eave + doke2RoofRise *
+    (1 - (doke2Sign.geometry.parameters.width / doke2RoofWidth) ** 2);
+assert.ok(doke2Sign.position.y - doke2Sign.geometry.parameters.height / 2 > doke2Eave,
+    'Doke 2 company sign should sit above the eave on the blue gable');
+assert.ok(doke2Sign.position.y + doke2Sign.geometry.parameters.height / 2 < doke2RoofAtSignEdge,
+    'Doke 2 company sign should fit under the curved roof at both ends');
+assert.ok(doke2Sign.position.z > buildings.doke2_assy.size.depth * 1.54 / 2 + .8,
+    'Doke 2 company sign should be visible in front of the gable');
 const storeBuilding = api.objects.get('building-doke1_store');
 const storeSign = storeBuilding.getObjectByName('TDK company sign');
 assert.ok(storeSign, 'Store should display a TDK company sign');
 assert.ok(storeSign.geometry.parameters.width / storeSign.geometry.parameters.height > 5,
     'Store company sign should retain a wide, readable signboard shape');
-assert.ok(storeSign.position.y < buildings.doke1_store.size.height * 1.54,
-    'Store sign should be mounted on the front facade rather than above the roof');
+const storeEave = buildings.doke1_store.size.height * 1.54 + .45;
+const storeRoofRise = buildings.doke1_store.roof.rise * 1.54;
+const storeRoofWidth = buildings.doke1_store.size.width * 1.54 + 1.8;
+const storeRoofAtSignEdge = storeEave + storeRoofRise *
+    (1 - (storeSign.geometry.parameters.width / storeRoofWidth) ** 2);
+assert.ok(storeSign.position.y - storeSign.geometry.parameters.height / 2 > storeEave,
+    'Store sign should sit above the eave on the blue gable');
+assert.ok(storeSign.position.y + storeSign.geometry.parameters.height / 2 < storeRoofAtSignEdge,
+    'Store sign should fit under the curved roof at both ends');
+assert.ok(storeSign.position.z > buildings.doke1_store.size.depth * 1.54 / 2 + .8,
+    'Store sign should be visible in front of the gable');
 let doke2DarkFacadeDetails = 0;
 doke2.traverse(object => {
     if (object.isMesh && object.material === api.materials.dark) doke2DarkFacadeDetails += 1;
@@ -457,6 +524,43 @@ near(migrated.api.objects.get('building-main_office').scale.x, 1);
 assert.equal(migrated.api.objects.get(cloneId).userData.editor.label, 'Office copy');
 const lockedBaseline = JSON.parse(readFileSync(new URL('../snapshots/baseline-2026-11-05/layout.json', import.meta.url), 'utf8'));
 const baselineRoundTrip = boot(JSON.stringify(lockedBaseline));
+const movingActors = baselineRoundTrip.api.activityActors;
+const routeObstacles = baselineRoundTrip.api.activityObstacles;
+assert.equal(movingActors.length, 16);
+for (const actor of movingActors) {
+    assert.ok(actor.navLoop && actor.mesh.visible, 'Every worker and vehicle needs a usable route');
+    assert.ok(actor.navLoop.total > 25, 'Activity routes must not collapse into tiny loops');
+    const { points } = actor.navLoop;
+    for (let i = 1; i < points.length; i++) {
+        const a = points[i - 1], b = points[i];
+        const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / .5));
+        for (let j = 0; j <= steps; j++) {
+            const x = a.x + (b.x - a.x) * j / steps;
+            const z = a.z + (b.z - a.z) * j / steps;
+            assert.ok(routeObstacles.every(box =>
+                x < box.minX - actor.clearance || x > box.maxX + actor.clearance ||
+                z < box.minZ - actor.clearance || z > box.maxZ + actor.clearance),
+            'A moving actor route must stay clear of saved walls and buildings');
+        }
+    }
+}
+const initialActorPositions = movingActors.map(actor => actor.mesh.position.clone());
+for (let frame = 0; frame < 200; frame++) baselineRoundTrip.api.updateActivity(.05);
+movingActors.forEach((actor, index) => {
+    assert.ok(actor.mesh.position.distanceTo(initialActorPositions[index]) > .5,
+        'Every worker and vehicle should continue moving');
+});
+const truck = movingActors.at(-1);
+let truckOverlap = 0;
+for (let length = 0; length < truck.navLoop.total; length += .5) {
+    const p = positionOnActivityLoop(truck.navLoop, length / truck.navLoop.total);
+    for (const localZ of [-3.5, 0, 3.5, 5.8]) for (const localX of [-1.5, 0, 1.5]) {
+        const x = p.x + Math.cos(p.heading) * localX + Math.sin(p.heading) * localZ;
+        const z = p.z - Math.sin(p.heading) * localX + Math.cos(p.heading) * localZ;
+        if (routeObstacles.some(box => x >= box.minX && x <= box.maxX && z >= box.minZ && z <= box.maxZ)) truckOverlap++;
+    }
+}
+assert.equal(truckOverlap, 0, 'The truck body must stay clear of saved walls and buildings');
 const roundTripState = baselineRoundTrip.api.saveEditorLayout();
 const roundTripAudit = auditExportLayout(roundTripState, lockedBaseline);
 if (!roundTripAudit.ok) {
@@ -465,10 +569,41 @@ if (!roundTripAudit.ok) {
     if (firstId) console.error('First round-trip values:', firstId, lockedBaseline.objects[firstId], roundTripState.objects[firstId]);
 }
 assert.equal(roundTripAudit.ok, true, 'Loading and saving the locked baseline must not create export differences');
+const driftedForExport = structuredClone(lockedBaseline);
+driftedForExport.objects['building-main_office'].position.x += 1;
+const blockedExport = boot(JSON.stringify(driftedForExport));
+blockedExport.win.fetch = async url => String(url).includes('layout.json')
+    ? { ok: true, json: async () => lockedBaseline }
+    : { ok: true, text: async () => '' };
+const storedBeforeExport = blockedExport.win.localStorage.getItem('tdk-v7-object-layout-v1');
+click(blockedExport, 'editor-export-threejs');
+await new Promise(resolve => setTimeout(resolve, 20));
+assert.equal(blockedExport.win.localStorage.getItem('tdk-v7-object-layout-v1'), storedBeforeExport,
+    'A rejected export must not overwrite local storage before the baseline audit');
+assert.equal(blockedExport.doc.getElementById('editor-repair-baseline').hidden, false,
+    'A rejected export should offer an explicit baseline repair');
+assert.ok(blockedExport.doc.getElementById('editor-status').textContent.includes('baseline'));
+errors.length = 0; // The expected rejected export logs its reason.
+const viewer = boot(JSON.stringify(lockedBaseline), undefined, '', true);
+assert.equal(viewer.doc.getElementById('editor-toggle').hidden, true, 'Deploy viewer must hide the editor entry point');
+viewer.doc.getElementById('editor-toggle').click();
+assert.equal(viewer.api.mode, false, 'Deploy viewer must reject programmatic attempts to enter editor mode');
+assert.equal(viewer.win.TDK_OBJECT_EDITOR, undefined, 'Deploy viewer must not expose the editor object registry');
+const editorEntry = boot(JSON.stringify(lockedBaseline), undefined, '', false, true);
+assert.equal(editorEntry.api.mode, true, 'editor.html entry must open directly in layout editor mode');
+assert.equal(editorEntry.doc.getElementById('editor-view-interior').disabled, true);
+editorEntry.api.selectEditable(editorEntry.api.objects.get('building-main_office'));
+assert.equal(editorEntry.doc.getElementById('editor-view-interior').disabled, false);
+click(editorEntry, 'editor-view-interior');
+assert.equal(editorEntry.api.mode, false, 'Interior preview should leave transform mode');
+assert.equal(editorEntry.win.TDK_FACTORY_MAP.activeInterior, 'main_office');
+click(editorEntry, 'interior-back');
+assert.equal(editorEntry.api.mode, true, 'Interior preview should return to editor');
+assert.equal(editorEntry.win.TDK_FACTORY_MAP.activeInterior, null);
 click(env, 'editor-done');
 assert.equal(api.mode, false);
 assert.equal(doc.getElementById('editor-topbar').hidden, true);
 assert.deepEqual(errors, []);
 console.log(`PASS: editor transforms, undo/redo, add/delete, clone buildings, multi-selection, persistence, view modes, fullscreen events; ${api.objects.size} editable objects; no overlapping building footprints.`);
 domCleanup();
-function domCleanup() { for (const test of [env, reloaded, withoutSource, customCamera, migratedCamera, migratedLayout, migrated, baselineRoundTrip]) test.dom.window.close(); }
+function domCleanup() { for (const test of [env, reloaded, withoutSource, customCamera, migratedCamera, migratedLayout, migrated, baselineRoundTrip, blockedExport, viewer, editorEntry]) test.dom.window.close(); }
