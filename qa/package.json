@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node editor.test.mjs && node render-quality.test.mjs && node building-interiors.test.mjs && node threejs-export.test.mjs && node canonical-layout-loader.test.mjs && node entrypoints.test.mjs && node build-standalone.mjs --check",
+    "test": "node editor.test.mjs && node render-quality.test.mjs && node building-interiors.test.mjs && node presentation-config.test.mjs && node external-assets.test.mjs && node threejs-export.test.mjs && node canonical-layout-loader.test.mjs && node entrypoints.test.mjs && node build-standalone.mjs --check",
     "build:standalone": "node build-standalone.mjs"
   },
   "devDependencies": {

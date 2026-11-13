@@ -91,9 +91,9 @@ import { SITE } from './app-config.js';
 
             export const CAMERA_PRESETS = {
                 // Latest camera calibration saved by the object-layout author.
-                reference: { position: [8, 120, 170], target: [25, 2, 10], fov: 46 },
+                reference: { position: [117, 85, 142], target: [34, 0, 31], fov: 42 },
                 // Presentation presets share a consistent visual centre and camera language.
-                aerial: { position: [-158, 168, 198], target: [8, 5, -8], fov: 46 },
+                aerial: { position: [151, 142, 169], target: [32, 0, 31], fov: 43 },
                 gate: { position: [-48, 24, 132], target: [-20, 4.5, 60], fov: 42 },
                 office: { position: [27, 35, 111], target: [-21.75, 4.5, 60.75], fov: 38 },
                 factory: { position: [-132, 58, 83], target: [-2, 7, -22], fov: 43 },

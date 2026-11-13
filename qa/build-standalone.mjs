@@ -26,19 +26,31 @@ const oldCss = JSON.parse(oldCssLiteral);
 const overrideStart = oldCss.lastIndexOf('\nbody.tdk-standalone-map #editor-toggle');
 assert.ok(overrideStart >= 0, 'Standalone viewer-only CSS overrides must exist');
 const overrides = oldCss.slice(overrideStart);
-const css = ['viewer.css', 'responsive.css', 'editor-workspace.css']
+const css = ['viewer.css', 'responsive.css', 'editor-workspace.css', 'design-system.css']
     .map(name => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8')).join('\n') + overrides;
 const bodyStart = indexHtml.indexOf('<body>') + '<body>'.length;
-const bodyEnd = indexHtml.indexOf('<script src="./src/bootstrap.js"', bodyStart);
+const bodyEnd = indexHtml.indexOf('<script type="module" src="./src/entry.js"', bodyStart);
 assert.ok(bodyStart >= '<body>'.length && bodyEnd > bodyStart, 'Current index body markers must exist');
 const aerialPng = readFileSync(new URL('../references/factory-aerial.png', import.meta.url)).toString('base64');
+const presentationLayoutSource = indexHtml.match(
+    /<img id="presentation-layout-image"\s+src="([^"]+)"/
+)?.[1];
+assert.match(presentationLayoutSource || '', /^\.\/references\/[a-zA-Z0-9._-]+\.png$/,
+    'Presentation layout image must be a local PNG in references');
+const presentationLayoutPng = readFileSync(
+    new URL(`../${presentationLayoutSource.slice(2)}`, import.meta.url)
+).toString('base64');
 const markup = indexHtml.slice(bodyStart, bodyEnd)
     .replace(/(<img id="reference-overlay" src=")[^"]+"/,
         `$1data:image/png;base64,${aerialPng}"`)
+    .replace(/(<img id="presentation-layout-image"\s+src=")[^"]+"/,
+        `$1data:image/png;base64,${presentationLayoutPng}"`)
     .replace(/(id="editor-reference-image" src=")[^"]+"/,
         '$1data:,"');
 assert.ok(markup.includes(`id="reference-overlay" src="data:image/png;base64,${aerialPng.slice(0, 20)}`),
     'Standalone reference overlay must be embedded for use in another project');
+assert.ok(markup.includes(`src="data:image/png;base64,${presentationLayoutPng.slice(0, 20)}`),
+    'Standalone presentation layout image must be embedded for use in another project');
 assert.ok(markup.includes('id="editor-reference-image" src="data:,"'));
 const requiredIds = [...mainSource.matchAll(/document\.getElementById\(['"]([^'"]+)['"]\)/g)]
     .map(match => match[1]);

@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="th">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>TDK Industrial — 3D Factory</title>
+    <link rel="icon"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231556a5'/%3E%3Cpath d='M6 9h20v5h-7v11h-6V14H6z' fill='white'/%3E%3C/svg%3E">
+
+
+  <script type="module" crossorigin src="./assets/index-Dk5-ilVp.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CUjuxcGe.css">
+</head>
+
+<body>
+    <div id="viewport">
+        <img id="reference-overlay" src="./assets/factory-aerial-t5E5mRDQ.png"
+            alt="ภาพถ่ายมุมสูงอ้างอิงสำหรับเทียบกับแบบจำลอง">
+        <section class="presentation-show" id="presentation-show" hidden aria-label="TDK Presentation Show">
+            <div class="presentation-brand" aria-hidden="true">
+                <span class="presentation-brand-mark">TDK</span>
+                <span>INDUSTRIAL</span>
+            </div>
+            <div class="presentation-weather" id="presentation-weather" aria-live="polite">☀ กลางวัน</div>
+            <div class="presentation-layout" id="presentation-layout" aria-hidden="true">
+                <img id="presentation-layout-image" src="./assets/TDKLayout-BA-FPoXM.png"
+                    alt="ผังพื้นที่โรงงาน TDK Industrial">
+            </div>
+            <div class="presentation-welcome" id="presentation-welcome" aria-live="polite">
+                <strong id="presentation-greeting">ยินดีต้อนรับสู่ TDK Industrial</strong>
+                <span class="presentation-subtitle" id="presentation-subtitle">ทัวร์ชมโรงงานแบบสามมิติ</span>
+            </div>
+            <article class="presentation-focus-card" id="presentation-focus-card" hidden aria-live="polite">
+                <div class="presentation-focus-head">
+                    <span id="presentation-focus-count">01 / 06</span>
+                    <span id="presentation-focus-category">MANAGEMENT &amp; COLLABORATION</span>
+                </div>
+                <h2 id="presentation-focus-title">Main Office</h2>
+                <p id="presentation-focus-description"></p>
+                <div class="presentation-focus-value">
+                    <span>OPERATIONAL VALUE</span>
+                    <strong id="presentation-focus-value"></strong>
+                </div>
+                <div class="presentation-focus-areas">
+                    <span>KEY AREAS</span>
+                    <div id="presentation-focus-zones"></div>
+                </div>
+            </article>
+            <div class="presentation-clock" aria-label="วันและเวลาปัจจุบัน">
+                <time id="presentation-time">--:--:--</time>
+                <span id="presentation-date">กำลังอ่านวันและเวลาปัจจุบัน</span>
+                <small id="presentation-timezone"></small>
+            </div>
+            <div class="presentation-progress" aria-hidden="true"><span id="presentation-progress-bar"></span></div>
+            <div class="presentation-tour-controls" aria-label="ควบคุม Executive Guided Tour">
+                <button id="presentation-previous" type="button" title="อาคารก่อนหน้า"
+                    aria-label="อาคารก่อนหน้า">‹</button>
+                <button id="presentation-pause" type="button" title="หยุดชั่วคราว" aria-label="หยุดชั่วคราว"
+                    aria-pressed="false">Ⅱ</button>
+                <button id="presentation-next" type="button" title="อาคารถัดไป" aria-label="อาคารถัดไป">›</button>
+            </div>
+        </section>
+    </div>
+
+    <header class="panel">
+        <div class="brand">TDK INDUSTRIAL</div>
+        <div class="subtitle">แบบจำลองโรงงานจากภาพถ่ายอ้างอิง</div>
+        <div class="badge">INTERACTIVE 3D · PHOTO-REFERENCED</div>
+    </header>
+
+    <aside class="viewer-controls" aria-label="แผงควบคุมมุมมอง">
+        <nav class="panel collapsible-panel" id="viewer-nav">
+            <div class="panel-bar">
+                <h3>มุมมองโรงงาน</h3>
+                <button class="panel-toggle" id="viewer-nav-toggle" type="button" aria-expanded="true"
+                    aria-controls="viewer-nav-content" aria-label="ยุบแผงมุมมองโรงงาน">
+                    <span aria-hidden="true"></span>
+                </button>
+            </div>
+            <div class="panel-content" id="viewer-nav-content">
+                <button class="view active" data-view="photo">Aerial Reference</button>
+                <button class="view" data-view="aerial">มุมสูงทั่วบริเวณ</button>
+                <button class="view" data-view="gate">Ground · Gate</button>
+                <button class="view" data-view="office">Ground · Main Office</button>
+                <button class="view" data-view="factory">Ground · Factory</button>
+                <button class="view" data-view="top">Satellite Top View</button>
+                <div class="action-group">
+                    <button id="game-toggle">🎮 เข้าโหมดเดินในแมพ</button>
+                    <button id="editor-toggle">🛠️ แก้ไขวัตถุ</button>
+                    <button id="presentation-start" class="presentation-start" type="button">▶ เริ่ม Presentation
+                        Show</button>
+                    <button id="viewer-fullscreen">⛶ เต็มหน้าจอ</button>
+                </div>
+                <div class="divider"></div>
+                <div class="option-list">
+                    <label><input id="labels" type="checkbox"> แสดงชื่ออาคาร</label>
+                    <label><input id="debug" type="checkbox"> Debug layout</label>
+                    <label><input id="rotate" type="checkbox"> หมุนชมอัตโนมัติ</label>
+                    <label><input id="warm" type="checkbox"> แสงช่วงเย็น</label>
+                </div>
+                <div class="environment-controls" aria-label="โหมดบรรยากาศสำหรับพรีเซนต์">
+                    <span class="environment-title">PRESENTATION ENVIRONMENT</span>
+                    <div class="environment-grid">
+                        <button type="button" class="environment-mode active" data-environment="day"
+                            aria-pressed="true">☀️ กลางวัน</button>
+                        <button type="button" class="environment-mode" data-environment="night" aria-pressed="false">🌙
+                            กลางคืน</button>
+                        <button type="button" class="environment-mode" data-environment="rain" aria-pressed="false">🌧️
+                            ฝนตก</button>
+                        <button type="button" class="environment-mode" data-environment="fog" aria-pressed="false">🌫️
+                            หมอก</button>
+                    </div>
+                    <label class="activity-option"><input id="activity-toggle" type="checkbox" checked> Animation
+                        คนและยานพาหนะ</label>
+                    <output id="environment-status" aria-live="polite">DAY · ทัศนวิสัยชัดเจน</output>
+                </div>
+            </div>
+        </nav>
+
+        <section class="reference-tools panel collapsible-panel" id="reference-tools">
+            <div class="panel-bar">
+                <h3>Reference Overlay</h3>
+                <button class="panel-toggle" id="reference-tools-toggle" type="button" aria-expanded="true"
+                    aria-controls="reference-tools-content" aria-label="ยุบแผงภาพอ้างอิง">
+                    <span aria-hidden="true"></span>
+                </button>
+            </div>
+            <div class="panel-content" id="reference-tools-content">
+                <div class="reference-actions">
+                    <button id="overlay-toggle" type="button" aria-pressed="false">Overlay: ปิด</button>
+                    <button id="overlay-difference" type="button" aria-pressed="false">Difference blend: ปิด</button>
+                </div>
+                <label>Opacity <input id="overlay-opacity" type="range" min="0" max="100" step="1"
+                        value="50"><output>50%</output></label>
+
+                <div class="reference-divider"></div>
+                <h4>Camera Calibration · Aerial Reference</h4>
+                <label>Position X <input id="camera-position-x" data-camera-path="position.0" type="range" min="-300"
+                        max="300" step="1" value="-67"><output>-67</output></label>
+                <label>Position Y <input id="camera-position-y" data-camera-path="position.1" type="range" min="1"
+                        max="300" step="1" value="120"><output>120</output></label>
+                <label>Position Z <input id="camera-position-z" data-camera-path="position.2" type="range" min="-300"
+                        max="300" step="1" value="170"><output>170</output></label>
+                <label>Target X <input id="camera-target-x" data-camera-path="target.0" type="range" min="-150"
+                        max="150" step="1" value="25"><output>25</output></label>
+                <label>Target Y <input id="camera-target-y" data-camera-path="target.1" type="range" min="-20" max="100"
+                        step="1" value="2"><output>2</output></label>
+                <label>Target Z <input id="camera-target-z" data-camera-path="target.2" type="range" min="-150"
+                        max="150" step="1" value="10"><output>10</output></label>
+                <label>FOV <input id="camera-fov" data-camera-path="fov" type="range" min="20" max="70" step="1"
+                        value="46"><output>46°</output></label>
+                <pre id="camera-json" aria-live="polite"></pre>
+                <button id="copy-camera-json" type="button">Copy camera JSON</button>
+                <small id="camera-copy-status" role="status"
+                    aria-live="polite">ค่ากล้องบันทึกอัตโนมัติในเบราว์เซอร์นี้</small>
+            </div>
+        </section>
+    </aside>
+
+    <div class="editor-topbar panel workspace-only" id="editor-topbar" hidden>
+        <div class="editor-brand">TDK <span>·</span> OBJECT EDITOR<small>พื้นที่แก้ไขแบบจำลองโรงงาน</small></div>
+        <div class="view-switch">
+            <button class="view active" data-view="photo">มุมภาพอ้างอิง</button>
+            <button class="view" data-view="top">มุมบน 2D</button>
+            <button id="editor-focus">โฟกัส (F)</button>
+        </div>
+        <div class="spacer"></div>
+        <button id="editor-presentation" class="presentation-start" type="button">▶ Presentation Show</button>
+        <button id="editor-panels" aria-pressed="false">ซ่อนแผง</button>
+        <button id="editor-fullscreen">⛶ เต็มหน้าจอ</button>
+        <button id="editor-done" class="primary">เสร็จสิ้น</button>
+    </div>
+    <aside class="editor-objects panel workspace-only" id="editor-objects" hidden>
+        <h3>วัตถุในฉาก <span class="object-count" id="object-count"></span></h3>
+        <input class="object-search" id="object-search" type="search" placeholder="ค้นหาอาคาร / วัตถุ…"
+            aria-label="ค้นหาวัตถุ">
+        <div class="object-list" id="object-list" aria-label="รายการวัตถุ"></div>
+    </aside>
+    <section class="editor-panel panel" id="editor-panel" hidden aria-label="คุณสมบัติวัตถุ">
+        <h3>คุณสมบัติวัตถุ</h3>
+        <div class="editor-selected" id="editor-selected">ยังไม่ได้เลือกวัตถุ</div>
+        <button type="button" id="editor-view-interior" class="editor-interior-button"
+            disabled>ดูผังภายในอาคารที่เลือก</button>
+        <div class="editor-grid tools">
+            <button type="button" id="editor-move" class="active">ย้าย G</button>
+            <button type="button" id="editor-rotate">หมุน R</button>
+            <button type="button" id="editor-scale">ขนาด S</button>
+        </div>
+        <div class="editor-section">
+            <label class="editor-section-title" for="editor-name">ชื่อวัตถุ</label>
+            <input id="editor-name" type="text" maxlength="100" placeholder="เลือกวัตถุเพื่อแก้ไข">
+            <span class="editor-section-title" style="margin-top:12px">ลำดับการแสดงผล</span>
+            <div class="editor-grid editor-render-order" role="group" aria-label="ลำดับการแสดงผลวัตถุ">
+                <button id="editor-front" type="button" aria-pressed="false" title="แสดงวัตถุที่เลือกทับถนนและฉาก">Front
+                    · แสดงทับ</button>
+                <button id="editor-back" type="button" aria-pressed="false" title="กลับไปแสดงตามระยะ 3 มิติ">Back ·
+                    ตามฉาก</button>
+            </div>
+            <span class="editor-section-title" style="margin-top:12px">ตำแหน่ง · หน่วยในฉาก</span>
+            <div class="editor-coords">
+                <label>X<input id="editor-x" type="number" step="0.25"></label>
+                <label>Y · สูง<input id="editor-y" type="number" step="0.25"></label>
+                <label>Z<input id="editor-z" type="number" step="0.25"></label>
+            </div>
+            <div class="editor-coords">
+                <label>หมุน Y · °<input id="editor-angle" type="number" step="1"></label>
+            </div>
+            <span class="editor-section-title">ขนาดจริง · หน่วยในฉาก</span>
+            <div class="editor-coords">
+                <label>กว้าง X<input id="editor-sx" type="number" step="0.25"></label>
+                <label>สูง Y<input id="editor-sy" type="number" step="0.25"></label>
+                <label>ยาว Z<input id="editor-sz" type="number" step="0.25"></label>
+            </div>
+            <label class="editor-check"><input id="editor-uniform" type="checkbox"
+                    checked>รักษาสัดส่วนเมื่อปรับขนาด</label>
+            <div class="editor-grid">
+                <button id="editor-shrink">− ย่อ 10%</button><button id="editor-grow">+ ขยาย 10%</button>
+            </div>
+            <label class="editor-check"><input id="editor-snap" type="checkbox" checked>จับระยะ 0.25 · หมุน 5° · สเกล
+                0.05</label>
+        </div>
+        <div class="editor-section">
+            <span class="editor-section-title">เพิ่มวัตถุใหม่</span>
+            <div class="editor-add">
+                <select id="editor-add-type" aria-label="ชนิดวัตถุใหม่">
+                    <option value="blueCrate">ลังสีน้ำเงิน</option>
+                    <option value="blueCabinet">ตู้สีน้ำเงิน</option>
+                    <option value="snackBooth">ร้านขนม</option>
+                    <option value="pavilion">ศาลาพักผ่อน</option>
+                    <option value="waterTank">ถังน้ำ</option>
+                    <option value="blueContainer">ตู้คอนเทนเนอร์</option>
+                    <option value="building">อาคารโรงงาน</option>
+                    <option value="roadSegment">ถนนสำเร็จรูป</option>
+                    <option value="roadSign">ป้ายจราจร</option>
+                    <option value="spiritHouse">ศาลพระภูมิ</option>
+                    <option value="parkedCar">รถยนต์</option>
+                </select><button id="editor-add" class="primary">+ เพิ่ม</button>
+            </div>
+            <details class="external-asset-library">
+                <summary>คลังวัตถุจาก CDN / URL ภายนอก</summary>
+                <p>รองรับโมเดล <code>.glb/.gltf</code> และรูปภาพจากเว็บที่อนุญาต CORS</p>
+                <div class="external-asset-row">
+                    <select id="editor-asset-preset" aria-label="โมเดลสำเร็จรูปจาก CDN"></select>
+                    <button id="editor-add-preset" type="button">+ เพิ่มจาก CDN</button>
+                </div>
+                <div class="external-asset-custom">
+                    <input id="editor-asset-url" type="url" inputmode="url" placeholder="https://example.com/model.glb"
+                        aria-label="URL โมเดลหรือรูปภาพ">
+                    <div class="external-asset-fields">
+                        <select id="editor-asset-kind" aria-label="ชนิดไฟล์ภายนอก">
+                            <option value="model">โมเดล GLB / GLTF</option>
+                            <option value="image">รูปภาพ / ป้าย</option>
+                        </select>
+                        <input id="editor-asset-name" type="text" maxlength="100" placeholder="ชื่อวัตถุ">
+                        <input id="editor-asset-size" type="number" min="0.25" max="50" step="0.25" value="5"
+                            aria-label="ขนาดเป้าหมาย">
+                    </div>
+                    <button id="editor-add-url" type="button" class="wide">+ เพิ่ม URL นี้ลงแผนที่</button>
+                </div>
+                <small id="external-asset-help">ไฟล์ยังอยู่ที่เว็บต้นทาง จึงต้องใช้อินเทอร์เน็ตเมื่อเปิดแผนที่</small>
+            </details>
+            <div class="editor-grid">
+                <button id="editor-duplicate">ทำสำเนา D</button><button id="editor-cut" type="button"
+                    title="เลือกกำแพง แล้วคลิกจุดเริ่มและจุดสิ้นสุดของส่วนที่จะตัด" aria-label="✂️ ตัดบางส่วน">✂️
+                    ตัดบางส่วน</button>
+                <button id="editor-delete" class="danger" title="ลบวัตถุที่เลือกทั้งชิ้น · ย้อนกลับได้">ลบทั้งชิ้น
+                    Del</button>
+                <button id="editor-undo">↶ ย้อนกลับ</button><button id="editor-redo">↷ ทำซ้ำ</button>
+                <button id="editor-save" class="primary">บันทึก</button><button id="editor-export">ส่งออก JSON</button>
+                <button id="editor-export-threejs" class="primary wide">Export Map · Three.js</button>
+                <button id="editor-repair-baseline" class="wide" type="button" hidden
+                    style="display:none">สำรองข้อมูลและคืนวัตถุเดิมตาม baseline</button>
+                <button id="editor-reference-toggle">ดูภาพอ้างอิง</button><button
+                    id="editor-reset">คืนค่าเริ่มต้น</button>
+            </div>
+        </div>
+        <div class="editor-status" id="editor-status" role="status" aria-live="polite">พร้อมแก้ไข</div>
+        <details>
+            <summary>วิธีใช้งานและคีย์ลัด</summary>
+            <p>คลิกเลือก · Shift+คลิกเลือกหลายชิ้น<br>Ctrl+ลาก ครอบเลือก · ลากแกนเพื่อปรับค่า<br>✂️ เลือกกำแพงแล้วคลิก 2
+                จุดเพื่อแยกช่วง<br>G ย้าย · R หมุน · S ปรับขนาด · F โฟกัส<br>Ctrl+Z ย้อนกลับ · Ctrl+Shift+Z
+                ทำซ้ำ<br>Ctrl+S บันทึก · Esc ยกเลิกการเลือก<br>ล้อเมาส์ซูม · คลิกขวาลากเลื่อนมุมมอง</p>
+        </details>
+    </section>
+    <section class="editor-reference panel workspace-only" id="editor-reference" hidden>
+        <div class="editor-grid"><button id="reference-aerial" class="active">ภาพมุมสูง</button><button
+                id="reference-satellite">ดาวเทียม</button></div>
+        <a id="reference-link" href="./references/factory-aerial.png" target="_blank" rel="noopener"><img
+                id="editor-reference-image" src="./assets/factory-aerial-t5E5mRDQ.png" alt="ภาพโรงงานสำหรับเทียบสัดส่วน"></a>
+        <small>สัดส่วนประมาณจากภาพ · คลิกภาพเพื่อเปิดขนาดเต็ม</small>
+    </section>
+    <div class="editor-footer workspace-only" id="editor-footer" hidden>
+        <span>● พื้นที่แก้ไขเต็มจอ · บันทึกอัตโนมัติในเบราว์เซอร์นี้</span>
+        <span class="desktop-help">Shift + คลิก: เลือกหลายชิ้น &nbsp; | &nbsp; G ย้าย · R หมุน · S ขนาด · F โฟกัส</span>
+    </div>
+
+    <div class="info panel">
+        <strong id="info-title">TDK Industrial — Factory Campus</strong>
+        <p id="info-text">
+            คลิกอาคารเพื่อเปิดผังภายในและดูรายละเอียดแต่ละโซน<br>
+            รูปทรงและสัดส่วนประมาณจากภาพอ้างอิง
+        </p>
+    </div>
+
+    <aside class="interior-panel panel" id="interior-panel" hidden aria-label="ผังภายในอาคาร">
+        <div class="interior-panel-head">
+            <div>
+                <span class="interior-eyebrow">BUILDING INTERIOR</span>
+                <h2 id="interior-title">ผังภายใน</h2>
+                <p id="interior-subtitle"></p>
+            </div>
+            <button type="button" id="interior-close" aria-label="กลับสู่แผนที่โรงงาน">×</button>
+        </div>
+        <p class="interior-guide">คลิกพื้นที่ในโมเดลหรือเลือกรายการด้านล่างเพื่อดูรายละเอียด</p>
+        <div class="interior-zones" id="interior-zones"></div>
+        <div class="interior-detail" id="interior-detail" aria-live="polite"></div>
+        <p class="interior-source">ผัง 3D นี้ตีความจากภาพอ้างอิงที่ให้มา ตำแหน่งและขนาดห้องเป็นสัดส่วนประมาณ</p>
+        <button type="button" class="interior-back" id="interior-back">← กลับสู่แผนที่โรงงาน</button>
+    </aside>
+
+    <div class="hint">ลาก: หมุน · ล้อเมาส์: ซูม · คลิกขวาลาก: เลื่อน</div>
+
+    <div class="game-hud" id="game-hud">
+        <b>WASD</b><span>เคลื่อนที่</span>
+        <span>เมาส์ = มอง</span><span class="jump">SPACE = กระโดด</span>
+        <span class="run">SHIFT = วิ่ง</span><span>V = สลับมุมมอง</span><span>1/2/3 =
+            มือเปล่า/มีด/ปืน</span><span>คลิกซ้าย = ใช้อาวุธ</span><span>ESC = ออก</span>
+    </div>
+    <div class="crosshair" id="crosshair"></div>
+    <div class="game-status" id="game-status">คลิกในฉากเพื่อควบคุมเมาส์</div>
+    <div class="weapon-hud" id="weapon-hud" aria-label="อาวุธที่เลือก">
+        <div class="weapon-slot active" data-weapon="unarmed"><b>1</b>มือเปล่า</div>
+        <div class="weapon-slot" data-weapon="knife"><b>2</b>มีด</div>
+        <div class="weapon-slot" data-weapon="pistol"><b>3</b>ปืน</div>
+    </div>
+    <div class="game-pad" id="game-pad" aria-label="ปุ่มควบคุมตัวละคร">
+        <button data-key="forward" aria-label="เดินหน้า">▲</button>
+        <button data-key="left" aria-label="เลี้ยวซ้าย">◀</button>
+        <button data-key="back" aria-label="ถอยหลัง">▼</button>
+        <button data-key="right" aria-label="เลี้ยวขวา">▶</button>
+    </div>
+
+    <div id="loading">
+        <div>
+            <div class="spinner"></div>
+            <b>TDK INDUSTRIAL</b>
+            <p id="load-message">กำลังสร้างแบบจำลองโรงงาน…</p>
+        </div>
+    </div>
+
+</body>
+
+</html>

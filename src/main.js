@@ -1,13 +1,33 @@
 import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
         import { TransformControls } from 'three/addons/controls/TransformControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
         import { SITE, GAME_CONFIG } from './app-config.js';
         import { TOP_VIEW_GRID, BUILDINGS, BUILDING_BY_ID, CAMERA_PRESETS, ROADS, WALKWAYS, PARKING_AREAS, FENCES, FRONT_WALLS, VEGETATION, layoutWarnings } from './factory-data.js';
         import { GAME_MOVEMENT_CODES, getMovementInput, movementDelta, clamp } from './game-controls.js';
         import { auditLayoutAgainstBaseline, prepareBaselineRepair, embedLayoutInStandalone } from './threejs-export.js';
         import { createActivityNavigator, positionOnActivityLoop } from './activity-navigation.js';
         import { createAdaptiveRenderQuality } from './render-quality.js';
-        import { BUILDING_INTERIORS, createBuildingInterior } from './building-interiors.js';
+        import { BUILDING_INTERIORS, EXECUTIVE_TOUR_STOPS, createBuildingInterior } from './building-interiors.js';
+        import { EXTERNAL_ASSET_PRESETS, externalAssetPreset, normalizeExternalAsset } from './external-assets.js';
+        import {
+            presentationGreetings,
+            PRESENTATION_GREETING_DURATION,
+            PRESENTATION_GREETING_VISIBLE_DURATION,
+            PRESENTATION_WEATHER_DURATION,
+            PRESENTATION_OPENING_DURATION,
+            PRESENTATION_LAYOUT_BRIDGE_DURATION,
+            PRESENTATION_LAYOUT_TRANSITION_LEAD,
+            PRESENTATION_ENVIRONMENT_TRANSITION_DURATION,
+            PRESENTATION_STOP_DURATION,
+            PRESENTATION_TRAVEL_DURATION,
+            PRESENTATION_CLOSING_DURATION,
+            presentationOverviewPositionPoints,
+            presentationOverviewTargetPoints,
+            presentationEnvironmentLabels,
+            presentationWeatherSequence,
+            presentationTourDuration
+        } from './presentation/presentation-config.js';
 
         const loading = document.getElementById('loading');
 
@@ -243,6 +263,16 @@ import * as THREE from 'three';
             let activityObstacleRevision = 0;
             const builtinTemplates = new Map();
             const deletedBuiltinObjects = new Set();
+            let externalModelLoader = null;
+            let externalTextureLoader = null;
+            const getExternalModelLoader = () => externalModelLoader ||= new GLTFLoader();
+            const getExternalTextureLoader = () => {
+                if (!externalTextureLoader) {
+                    externalTextureLoader = new THREE.TextureLoader();
+                    externalTextureLoader.setCrossOrigin('anonymous');
+                }
+                return externalTextureLoader;
+            };
             let editorSequence = 0;
             let storedEditorLayout = { revision: EDITOR_LAYOUT_REVISION, objects: {}, added: [], deleted: [], cuts: [] };
             try {
@@ -557,13 +587,15 @@ import * as THREE from 'three';
             }
 
             function registerEditable(group, {
-                id, type, label, builtin = true, collidable = true, sourceId = null, cuttable = false
+                id, type, label, builtin = true, collidable = true, sourceId = null, cuttable = false,
+                asset = null
             }) {
                 if (!group || !id) return group;
                 group.name = label || id;
                 group.userData.editor = {
                     id, type, label: label || id, builtin, collidable, sourceId, cuttable, renderMode: 'back',
-                    baseY: group.position.y
+                    baseY: group.position.y,
+                    ...(asset ? { asset: structuredClone(asset) } : {})
                 };
                 if (builtin) builtinTemplates.set(id, group);
                 if (builtin && deletedBuiltinObjects.has(id)) {
@@ -890,6 +922,62 @@ import * as THREE from 'three';
                     box(group, 1.8, 1.2, .08, xx, 2.2, 2.02, M.glassBlue, false);
                 }
                 identify(group, 'ตู้สีน้ำเงิน', 'อาคารตู้คอนเทนเนอร์สำนักงานชั่วคราวที่สามารถย้ายได้');
+                return group;
+            }
+
+            function roadSegment(x, z) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+                scene.add(group);
+                box(group, 14, .12, 6, 0, .06, 0, M.asphalt, false);
+                for (const edge of [-2.62, 2.62]) {
+                    box(group, 13.7, .025, .12, 0, .135, edge, M.white, false);
+                }
+                for (let markerX = -5.5; markerX <= 5.5; markerX += 2.75) {
+                    box(group, 1.45, .03, .13, markerX, .14, 0, M.yellow, false);
+                }
+                identify(group, 'ถนนสำเร็จรูป', 'ช่วงถนนที่เพิ่มใหม่ สามารถย้าย หมุน และต่อกันได้');
+                return group;
+            }
+
+            function roadSign(x, z) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+                scene.add(group);
+                cyl(group, .07, .09, 3.2, 0, 1.6, 0, M.frame, 10);
+                box(group, 3.05, 1.65, .13, 0, 3.15, 0, M.officeBlue, false);
+                sign(group, 'SLOW · 20', 0, 3.15, .071, 2.8, 1.4, {
+                    background: '#ffffff', color: '#1556a5', fontSize: 64
+                });
+                box(group, .55, .18, .55, 0, .09, 0, M.concreteDark, false);
+                identify(group, 'ป้ายจราจร', 'ป้ายจำกัดความเร็วสำหรับถนนภายในโรงงาน');
+                return group;
+            }
+
+            function spiritHouse(x, z) {
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+                scene.add(group);
+                const gold = material('#d7a92f', .38, .38);
+                const shrineRed = material('#9f342c', .52, .12);
+                box(group, 2.8, .28, 2.8, 0, .14, 0, M.concreteLight);
+                box(group, 1.15, 1.55, 1.15, 0, 1.02, 0, shrineRed);
+                box(group, 2.25, .22, 2.25, 0, 1.85, 0, gold);
+                for (const px of [-.78, .78]) {
+                    for (const pz of [-.78, .78]) cyl(group, .09, .11, 1.45, px, 1.08, pz, gold, 8);
+                }
+                const roofLower = new THREE.Mesh(new THREE.ConeGeometry(1.75, .9, 4), shrineRed);
+                roofLower.position.y = 2.42;
+                roofLower.rotation.y = Math.PI / 4;
+                group.add(roofLower);
+                const roofUpper = new THREE.Mesh(new THREE.ConeGeometry(1.15, .72, 4), gold);
+                roofUpper.position.y = 3.05;
+                roofUpper.rotation.y = Math.PI / 4;
+                group.add(roofUpper);
+                const finial = new THREE.Mesh(new THREE.ConeGeometry(.16, .8, 8), gold);
+                finial.position.y = 3.72;
+                group.add(finial);
+                identify(group, 'ศาลพระภูมิ', 'ศาลขนาดเล็กสำหรับจัดวางในพื้นที่ภูมิทัศน์ของโรงงาน');
                 return group;
             }
 
@@ -2137,6 +2225,273 @@ import * as THREE from 'three';
             stripBetween(scene, -30, 75.1, -7, 75.1, .14, .12, M.yellow, .05);
             for (let x = -28; x < -8; x += 2.8) box(scene, 1.4, .025, .16, x, .12, 69.8, M.white, false);
 
+            function createEntranceMonument() {
+                const group = new THREE.Group();
+                group.name = 'TDK entrance monument';
+                group.position.set(-2.4, 0, 84.5);
+                // Face approaching traffic while keeping the sign parallel to the driveway edge.
+                group.rotation.y = -1.385;
+                scene.add(group);
+
+                const islandGreen = material('#679244', .92, .04);
+                const monumentBlue = material('#073f91', .46, .24);
+                const monumentCyan = material('#0879dc', .38, .22);
+                const footing = box(group, 6.8, .42, 2.2, 0, .21, 0, M.concreteDark);
+                footing.name = 'Entrance monument footing';
+                const body = box(group, 5.8, 14.8, .72, 0, 7.85, 0, M.officeWhite);
+                body.name = 'Entrance monument panel';
+                box(group, 5.82, 5.9, .76, 0, 3.4, 0, monumentBlue);
+
+                const addFaceShape = (points, faceMaterial, side) => {
+                    const shape = new THREE.Shape();
+                    shape.moveTo(points[0][0], points[0][1]);
+                    points.slice(1).forEach(([x, y]) => shape.lineTo(x, y));
+                    shape.closePath();
+                    const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), faceMaterial);
+                    mesh.position.z = side * .385;
+                    if (side < 0) mesh.rotation.y = Math.PI;
+                    mesh.castShadow = true;
+                    group.add(mesh);
+                    return mesh;
+                };
+                for (const side of [-1, 1]) {
+                    addFaceShape([
+                        [-2.9, .45], [2.9, .45], [2.9, 9.45], [-2.9, 6.85]
+                    ], monumentBlue, side).name = 'Entrance monument blue face';
+                    addFaceShape([
+                        [-2.9, 6.85], [2.9, 9.45], [2.9, 10.2], [-2.9, 7.6]
+                    ], monumentCyan, side).name = 'Entrance monument cyan stripe';
+                }
+
+                const logoBlue = material('#0872d7', .24, .48);
+                const logoEdge = material('#173e68', .32, .58);
+                const polygonShape = (points, holes = []) => {
+                    const shape = new THREE.Shape();
+                    shape.moveTo(points[0][0], points[0][1]);
+                    points.slice(1).forEach(([x, y]) => shape.lineTo(x, y));
+                    shape.closePath();
+                    holes.forEach(holePoints => {
+                        const hole = new THREE.Path();
+                        hole.moveTo(holePoints[0][0], holePoints[0][1]);
+                        holePoints.slice(1).forEach(([x, y]) => hole.lineTo(x, y));
+                        hole.closePath();
+                        shape.holes.push(hole);
+                    });
+                    return shape;
+                };
+                const addExtrudedLogoShape = (parent, name, points, holes = []) => {
+                    const geometry = new THREE.ExtrudeGeometry(polygonShape(points, holes), {
+                        depth: .28,
+                        bevelEnabled: true,
+                        bevelSegments: 2,
+                        bevelSize: .035,
+                        bevelThickness: .035,
+                        curveSegments: 2
+                    });
+                    const mesh = new THREE.Mesh(geometry, [logoBlue, logoEdge]);
+                    mesh.name = name;
+                    mesh.castShadow = true;
+                    mesh.receiveShadow = true;
+                    parent.add(mesh);
+                };
+                const add3DLogo = side => {
+                    const logo = new THREE.Group();
+                    logo.name = 'Entrance monument TDK 3D logo';
+                    logo.position.set(0, 12.65, side * .4);
+                    if (side < 0) logo.rotation.y = Math.PI;
+                    group.add(logo);
+
+                    // Custom italic TDK silhouette. Closed faces keep the D counter
+                    // and K arms crisp while the extrusion provides real side depth.
+                    addExtrudedLogoShape(logo, 'Entrance monument logo T', [
+                        [-2.25, .72], [-.76, .72], [-.86, .36], [-1.34, .36],
+                        [-1.68, -.78], [-2.12, -.78], [-1.78, .36], [-2.35, .36]
+                    ]);
+                    addExtrudedLogoShape(logo, 'Entrance monument logo D', [
+                        [-.49, .72], [.27, .72], [.66, .58], [.82, .3],
+                        [.6, -.48], [.25, -.78], [-.88, -.78]
+                    ], [[
+                        [-.41, -.41], [.05, -.41], [.2, -.32], [.39, .13],
+                        [.34, .27], [.16, .36], [-.2, .36]
+                    ]]);
+                    addExtrudedLogoShape(logo, 'Entrance monument logo K stem', [
+                        [1.15, .72], [1.59, .72], [1.24, -.78], [.8, -.78]
+                    ]);
+                    addExtrudedLogoShape(logo, 'Entrance monument logo K upper arm', [
+                        [1.37, .08], [1.93, .72], [2.46, .72], [1.52, -.08]
+                    ]);
+                    addExtrudedLogoShape(logo, 'Entrance monument logo K lower arm', [
+                        [1.34, .09], [1.82, -.78], [2.35, -.78], [1.58, .29]
+                    ]);
+                };
+
+                const brandCanvas = document.createElement('canvas');
+                brandCanvas.width = 1024;
+                brandCanvas.height = 180;
+                const brandContext = brandCanvas.getContext('2d');
+                brandContext.textAlign = 'center';
+                brandContext.textBaseline = 'middle';
+                brandContext.shadowColor = 'rgba(22,58,92,.35)';
+                brandContext.shadowBlur = 10;
+                brandContext.fillStyle = '#164d86';
+                brandContext.font = 'italic 900 86px Arial,sans-serif';
+                brandContext.fillText('TDK Industrial', 512, 92);
+                const brandTexture = new THREE.CanvasTexture(brandCanvas);
+                brandTexture.colorSpace = THREE.SRGBColorSpace;
+                brandTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+                const taglineCanvas = document.createElement('canvas');
+                taglineCanvas.width = 1024;
+                taglineCanvas.height = 360;
+                const taglineContext = taglineCanvas.getContext('2d');
+                taglineContext.textAlign = 'center';
+                taglineContext.textBaseline = 'middle';
+                taglineContext.shadowColor = 'rgba(0,0,0,.45)';
+                taglineContext.shadowBlur = 12;
+                taglineContext.fillStyle = '#ffffff';
+                taglineContext.font = '700 72px Arial,sans-serif';
+                taglineContext.fillText('Global Leading Company', 512, 125);
+                taglineContext.font = '700 58px Tahoma,Arial,sans-serif';
+                taglineContext.fillText('บริษัทชั้นนำระดับโลก', 512, 245);
+                const taglineTexture = new THREE.CanvasTexture(taglineCanvas);
+                taglineTexture.colorSpace = THREE.SRGBColorSpace;
+                taglineTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+                const addPrintedFace = (texture, width, height, y, side, name) => {
+                    const face = new THREE.Mesh(
+                        new THREE.PlaneGeometry(width, height),
+                        new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false })
+                    );
+                    face.name = name;
+                    face.position.set(0, y, side * .395);
+                    if (side < 0) face.rotation.y = Math.PI;
+                    face.renderOrder = 2;
+                    group.add(face);
+                };
+                for (const side of [-1, 1]) {
+                    add3DLogo(side);
+                    addPrintedFace(brandTexture, 4.8, .72, 10.95, side, 'Entrance monument brand line');
+                    addPrintedFace(taglineTexture, 4.9, 1.8, 3.75, side, 'Entrance monument tagline');
+                }
+
+                // Landscaped roadside island inspired by the reference entrance.
+                const plantingBed = box(group, 12, .14, 4.2, 0, .07, -1.25, islandGreen, false);
+                plantingBed.name = 'Entrance monument planting bed';
+                for (let index = 0; index < 8; index++) {
+                    box(group, 1.48, .28, .32, -5.2 + index * 1.48, .14, .93,
+                        index % 2 ? M.white : M.red, false);
+                }
+                box(group, 12, .28, .32, 0, .14, -3.4, M.white, false);
+                for (const x of [-5, -3.8, 3.8, 5]) {
+                    const shrub = new THREE.Mesh(
+                        new THREE.SphereGeometry(1, 12, 8),
+                        M.foliage[Math.abs(Math.round(x)) % M.foliage.length]
+                    );
+                    shrub.name = 'Entrance monument hedge';
+                    shrub.position.set(x, .56, -1.65);
+                    shrub.scale.set(1.05, .55, .72);
+                    shrub.castShadow = true;
+                    shrub.receiveShadow = true;
+                    group.add(shrub);
+                }
+                for (const x of [-5.25, 5.25]) {
+                    cyl(group, .12, .18, 1.1, x, .55, -1.55, M.trunk, 8);
+                    const topiary = new THREE.Mesh(
+                        new THREE.ConeGeometry(.78, 2.8, 14), M.foliage[0]
+                    );
+                    topiary.name = 'Entrance monument topiary';
+                    topiary.position.set(x, 2.05, -1.55);
+                    topiary.castShadow = true;
+                    topiary.receiveShadow = true;
+                    group.add(topiary);
+                }
+
+                group.userData.info = {
+                    title: 'ป้าย TDK ทางเข้าโรงงาน',
+                    description: 'ป้าย landmark และสวนต้อนรับบริเวณทางเข้า อ้างอิงจากภาพทางเข้าโรงงาน'
+                };
+                return group;
+            }
+
+            function createEntranceAvenue() {
+                const group = new THREE.Group();
+                group.name = 'Landscaped entrance avenue';
+                group.position.set(-62.5, 0, 88.25);
+                group.rotation.y = .1846;
+                scene.add(group);
+
+                const avenueGreen = material('#6f994c', .96, .02);
+                box(group, 81, .1, 3.8, 0, .02, -8.15, avenueGreen, false);
+                box(group, 81, .1, 3.8, 0, .02, 8.15, avenueGreen, false);
+
+                const addInstances = (name, geometry, instanceMaterial, transforms, castShadow = true) => {
+                    const mesh = new THREE.InstancedMesh(geometry, instanceMaterial, transforms.length);
+                    mesh.name = name;
+                    mesh.castShadow = castShadow;
+                    mesh.receiveShadow = true;
+                    const dummy = new THREE.Object3D();
+                    transforms.forEach((transform, index) => {
+                        dummy.position.set(...transform.position);
+                        dummy.rotation.set(0, transform.rotationY || 0, 0);
+                        dummy.scale.set(...(transform.scale || [1, 1, 1]));
+                        dummy.updateMatrix();
+                        mesh.setMatrixAt(index, dummy.matrix);
+                    });
+                    mesh.instanceMatrix.needsUpdate = true;
+                    group.add(mesh);
+                    return mesh;
+                };
+
+                const redCurbs = [];
+                const whiteCurbs = [];
+                let curbIndex = 0;
+                for (let x = -39.2; x <= 36; x += 2.2) {
+                    for (const z of [-6.35, 6.35]) {
+                        const entry = { position: [x, .14, z] };
+                        (curbIndex % 2 ? whiteCurbs : redCurbs).push(entry);
+                    }
+                    curbIndex++;
+                }
+                const curbGeometry = new THREE.BoxGeometry(2.16, .28, .34);
+                addInstances('Entrance avenue red curbs', curbGeometry, M.red, redCurbs, false);
+                addInstances('Entrance avenue white curbs', curbGeometry, M.white, whiteCurbs, false);
+
+                const hedges = [];
+                for (let x = -37; x <= 31; x += 4.25) {
+                    for (const z of [-8.05, 8.05]) {
+                        const variation = 1 + ((Math.round(x * 10) + Math.round(z)) % 3) * .08;
+                        hedges.push({
+                            position: [x, .58, z],
+                            scale: [1.5 * variation, .58, .78]
+                        });
+                    }
+                }
+                addInstances('Entrance avenue hedges',
+                    new THREE.SphereGeometry(1, 10, 7), M.foliage[1], hedges);
+
+                const trunks = [];
+                const crowns = [];
+                for (let x = -34; x <= 25; x += 11.8) {
+                    for (const z of [-9.55, 9.55]) {
+                        trunks.push({ position: [x, 1.5, z] });
+                        crowns.push({
+                            position: [x, 4.05, z],
+                            scale: [1.28, 1.72, 1.28]
+                        });
+                    }
+                }
+                addInstances('Entrance avenue tree trunks',
+                    new THREE.CylinderGeometry(.15, .22, 3, 8), M.trunk, trunks);
+                addInstances('Entrance avenue tree crowns',
+                    new THREE.IcosahedronGeometry(1, 1), M.foliage[2], crowns);
+
+                group.userData.info = {
+                    title: 'ภูมิทัศน์ถนนทางเข้าโรงงาน',
+                    description: 'ขอบทางแดง-ขาว พุ่มไม้ และแนวต้นไม้ต้อนรับตามภาพอ้างอิง'
+                };
+                return group;
+            }
+
             // Parked delivery trucks (matching photo 3 - trucks at loading dock)
             function deliveryTruck(x, z, rotY = 0, bodyColor = '#ecece4') {
                 const trk = new THREE.Group();
@@ -2552,7 +2907,6 @@ import * as THREE from 'three';
                 weatherMaterials.forEach(mat => {
                     mat.roughness = wet ? Math.min(.3, mat.userData.dryRoughness) : mat.userData.dryRoughness;
                     mat.metalness = wet ? Math.min(1, mat.userData.dryMetalness + .2) : mat.userData.dryMetalness;
-                    mat.needsUpdate = true;
                 });
             }
 
@@ -2585,6 +2939,7 @@ import * as THREE from 'three';
                 renderer.shadowMap.needsUpdate = true;
                 const warmToggle = document.getElementById('warm');
                 if (mode !== 'day') warmToggle.checked = false;
+                rainMaterial.opacity = .42;
                 rainField.visible = mode === 'rain';
                 setWetSurface(mode === 'rain');
                 setWindowGlow(mode === 'night');
@@ -2646,8 +3001,16 @@ import * as THREE from 'three';
                 });
             }
 
+            let rainUpdateElapsed = 0;
             function updateWeather(dt) {
-                if (!rainField.visible) return;
+                if (!rainField.visible) {
+                    rainUpdateElapsed = 0;
+                    return;
+                }
+                rainUpdateElapsed += dt;
+                if (rainUpdateElapsed < 1 / 30) return;
+                dt = Math.min(rainUpdateElapsed, .1);
+                rainUpdateElapsed = 0;
                 const positions = rainGeometry.attributes.position.array;
                 for (let i = 0; i < rainCount; i++) {
                     const offset = i * 6;
@@ -3741,21 +4104,157 @@ import * as THREE from 'three';
             }
             applyStoredWallCuts();
             registerEverySceneObject();
+            registerEditable(createEntranceMonument(), {
+                id: 'entrance-tdk-monument-v1',
+                type: 'entranceMonument',
+                label: 'ป้าย TDK ทางเข้าโรงงาน',
+                builtin: false,
+                collidable: true
+            });
+            registerEditable(createEntranceAvenue(), {
+                id: 'entrance-landscaped-avenue-v1',
+                type: 'entranceAvenue',
+                label: 'ภูมิทัศน์ถนนทางเข้าโรงงาน',
+                builtin: false,
+                collidable: false
+            });
             selectionPivot.name = 'Editor multi-selection pivot';
             selectionHighlightGroup.name = 'Editor selection highlights';
             scene.add(selectionPivot, selectionHighlightGroup);
+
+            function externalAssetPlaceholder(point, asset) {
+                const group = new THREE.Group();
+                group.position.copy(point);
+                const placeholder = new THREE.Group();
+                placeholder.name = 'External asset loading placeholder';
+                const size = Math.min(4, Math.max(1.25, asset.targetSize * .5));
+                box(placeholder, size, size, size, 0, size / 2, 0,
+                    new THREE.MeshStandardMaterial({
+                        color: '#80a9d8', roughness: .72, metalness: .08,
+                        transparent: true, opacity: .62, wireframe: true
+                    }), false);
+                group.add(placeholder);
+                group.userData.externalPlaceholder = placeholder;
+                scene.add(group);
+                return group;
+            }
+
+            function clearExternalAssetPlaceholder(group) {
+                const placeholder = group.userData.externalPlaceholder;
+                if (!placeholder) return;
+                unregisterPickMeshes(placeholder);
+                placeholder.traverse(object => {
+                    object.geometry?.dispose?.();
+                    const materials = Array.isArray(object.material) ? object.material : [object.material];
+                    materials.filter(Boolean).forEach(material => material.dispose?.());
+                });
+                placeholder.removeFromParent();
+                delete group.userData.externalPlaceholder;
+            }
+
+            function registerExternalAssetMeshes(group, asset) {
+                group.traverse(object => {
+                    if (!(object.isMesh || object.isLine || object.isSprite)) return;
+                    object.userData.editRoot = group;
+                    object.userData.info ||= {
+                        title: asset.name,
+                        description: [asset.credit, asset.license].filter(Boolean).join(' · ') ||
+                            'วัตถุที่โหลดจาก URL ภายนอก'
+                    };
+                    if (!meshesToPick.includes(object)) meshesToPick.push(object);
+                    if (object.isMesh) {
+                        object.castShadow = true;
+                        object.receiveShadow = true;
+                    }
+                });
+                if (group.userData.editor?.renderMode === 'front') setEditorRenderMode(group, 'front');
+                updateEditableBounds(group);
+                updateSelectionHighlights();
+                refreshObjectList();
+            }
+
+            function showExternalAssetError(group, asset, error) {
+                if (editableObjects.get(group.userData.editor?.id) !== group) return;
+                const placeholder = group.userData.externalPlaceholder;
+                placeholder?.traverse(object => {
+                    if (!object.material) return;
+                    object.material.color?.set('#c84c4c');
+                    object.material.wireframe = true;
+                });
+                console.error(`External asset failed: ${asset.url}`, error);
+                editorStatus.textContent = `โหลด “${asset.name}” ไม่สำเร็จ · ตรวจ URL และ CORS ของเว็บต้นทาง`;
+            }
+
+            function hydrateExternalAsset(group, asset) {
+                const isCurrent = () => editableObjects.get(group.userData.editor?.id) === group;
+                if (asset.kind === 'image') {
+                    getExternalTextureLoader().load(asset.url, texture => {
+                        if (!isCurrent()) { texture.dispose(); return; }
+                        texture.colorSpace = THREE.SRGBColorSpace;
+                        const image = texture.image;
+                        const aspect = image?.naturalWidth && image?.naturalHeight
+                            ? image.naturalWidth / image.naturalHeight
+                            : (image?.width && image?.height ? image.width / image.height : 1.5);
+                        const width = asset.targetSize;
+                        const height = width / Math.max(.1, aspect);
+                        const mesh = new THREE.Mesh(
+                            new THREE.PlaneGeometry(width, height),
+                            new THREE.MeshBasicMaterial({
+                                map: texture, transparent: true, side: THREE.DoubleSide, alphaTest: .02
+                            })
+                        );
+                        mesh.position.y = height / 2;
+                        clearExternalAssetPlaceholder(group);
+                        group.add(mesh);
+                        registerExternalAssetMeshes(group, asset);
+                        editorStatus.textContent = `โหลดรูปภาพ “${asset.name}” แล้ว`;
+                    }, undefined, error => showExternalAssetError(group, asset, error));
+                    return;
+                }
+
+                getExternalModelLoader().load(asset.url, gltf => {
+                    if (!isCurrent()) return;
+                    const model = gltf.scene || gltf.scenes?.[0];
+                    if (!model) {
+                        showExternalAssetError(group, asset, new Error('ไฟล์ไม่มี scene ที่แสดงผลได้'));
+                        return;
+                    }
+                    model.updateWorldMatrix(true, true);
+                    const initialBox = new THREE.Box3().setFromObject(model);
+                    const initialSize = initialBox.getSize(new THREE.Vector3());
+                    const longestSide = Math.max(initialSize.x, initialSize.y, initialSize.z);
+                    if (!Number.isFinite(longestSide) || longestSide <= 0) {
+                        showExternalAssetError(group, asset, new Error('โมเดลไม่มีขนาดที่ใช้งานได้'));
+                        return;
+                    }
+                    model.scale.multiplyScalar(asset.targetSize / longestSide);
+                    model.updateWorldMatrix(true, true);
+                    const fittedBox = new THREE.Box3().setFromObject(model);
+                    const center = fittedBox.getCenter(new THREE.Vector3());
+                    model.position.x -= center.x;
+                    model.position.y -= fittedBox.min.y;
+                    model.position.z -= center.z;
+                    clearExternalAssetPlaceholder(group);
+                    group.add(model);
+                    registerExternalAssetMeshes(group, asset);
+                    editorStatus.textContent = `โหลดโมเดล “${asset.name}” จาก CDN/URL แล้ว`;
+                }, undefined, error => showExternalAssetError(group, asset, error));
+            }
 
             function editorLabel(type) {
                 return {
                     blueCrate: 'ลังสีน้ำเงิน', blueCabinet: 'ตู้สีน้ำเงิน',
                     snackBooth: 'กล่อง/ร้านขนม', pavilion: 'ศาลาพักผ่อน',
-                    waterTank: 'ถังน้ำสีน้ำเงิน', blueContainer: 'ตู้คอนเทนเนอร์สีน้ำเงิน', building: 'อาคารโรงงาน'
+                    waterTank: 'ถังน้ำสีน้ำเงิน', blueContainer: 'ตู้คอนเทนเนอร์สีน้ำเงิน', building: 'อาคารโรงงาน',
+                    roadSegment: 'ถนนสำเร็จรูป', roadSign: 'ป้ายจราจร', spiritHouse: 'ศาลพระภูมิ',
+                    parkedCar: 'รถยนต์', externalModel: 'โมเดลภายนอก', externalImage: 'รูปภาพภายนอก'
                 }[type] || 'วัตถุ';
             }
 
-            function createEditorObject(type, id = '', position = null, builtin = false, sourceId = null) {
+            function createEditorObject(type, id = '', position = null, builtin = false, sourceId = null, asset = null) {
                 const objectId = id || `custom-${type}-${++editorSequence}`;
                 const point = position || new THREE.Vector3(controls.target.x + 2, 0, controls.target.z + 2);
+                const externalAsset = asset ? normalizeExternalAsset(asset) : null;
                 let group;
                 if (type === 'sceneObject' && sourceId && builtinTemplates.has(sourceId)) {
                     group = cloneEditorGroup(builtinTemplates.get(sourceId));
@@ -3770,11 +4269,22 @@ import * as THREE from 'three';
                 else if (type === 'snackBooth') group = snackBooth(point.x, point.z);
                 else if (type === 'blueContainer') group = blueContainerBooth(point.x, point.z);
                 else if (type === 'blueCabinet') group = blueCabinet(point.x, point.z);
+                else if (type === 'roadSegment') group = roadSegment(point.x, point.z);
+                else if (type === 'roadSign') group = roadSign(point.x, point.z);
+                else if (type === 'spiritHouse') group = spiritHouse(point.x, point.z);
+                else if (type === 'parkedCar') group = car(scene, point.x, point.z, '#1677a8');
+                else if (['externalModel', 'externalImage'].includes(type) && externalAsset) {
+                    group = externalAssetPlaceholder(point, externalAsset);
+                }
                 else group = blueCrate(point.x, point.z);
                 group.position.y = point.y;
-                return registerEditable(group, {
-                    id: objectId, type, label: `${editorLabel(type)} ${objectId.split('-').at(-1)}`, builtin, sourceId
+                const registered = registerEditable(group, {
+                    id: objectId, type,
+                    label: externalAsset?.name || `${editorLabel(type)} ${objectId.split('-').at(-1)}`,
+                    builtin, sourceId, asset: externalAsset
                 });
+                if (externalAsset) hydrateExternalAsset(registered, externalAsset);
+                return registered;
             }
 
             const addedIds = storedEditorLayout.added.map(item => item.id || item);
@@ -3784,7 +4294,7 @@ import * as THREE from 'three';
                     ? { id: item, type: storedEditorLayout.objects?.[item]?.type || 'blueCrate' }
                     : item;
                 if (!entry.id || editableObjects.has(entry.id)) return;
-                createEditorObject(entry.type || 'blueCrate', entry.id, new THREE.Vector3(), false, entry.sourceId);
+                createEditorObject(entry.type || 'blueCrate', entry.id, new THREE.Vector3(), false, entry.sourceId, entry.asset);
             });
             refreshActivityNavigation();
             updateActivity(0);
@@ -3811,7 +4321,11 @@ import * as THREE from 'three';
                 const added = [];
                 editableObjects.forEach((group, id) => {
                     objects[id] = serializeTransform(group);
-                    if (!group.userData.editor.builtin) added.push({ id, type: group.userData.editor.type, sourceId: group.userData.editor.sourceId });
+                    if (!group.userData.editor.builtin) {
+                        const entry = { id, type: group.userData.editor.type, sourceId: group.userData.editor.sourceId };
+                        if (group.userData.editor.asset) entry.asset = structuredClone(group.userData.editor.asset);
+                        added.push(entry);
+                    }
                 });
                 return {
                     revision: EDITOR_LAYOUT_REVISION,
@@ -4309,8 +4823,9 @@ import * as THREE from 'three';
                 targets.forEach(source => {
                     const type = source.userData.editor.type;
                     const sourceId = source.userData.editor.sourceId || (source.userData.editor.builtin ? source.userData.editor.id : null);
+                    const asset = source.userData.editor.asset || null;
                     const renderMode = source.userData.editor.renderMode || 'back';
-                    const copy = createEditorObject(type, '', source.position.clone().add(new THREE.Vector3(2, 0, 2)), false, sourceId);
+                    const copy = createEditorObject(type, '', source.position.clone().add(new THREE.Vector3(2, 0, 2)), false, sourceId, asset);
                     copy.userData.editor.label = `${source.userData.editor.label} (สำเนา)`;
                     copy.rotation.copy(source.rotation);
                     copy.scale.copy(source.scale);
@@ -4360,6 +4875,45 @@ import * as THREE from 'three';
             editorToggle.addEventListener('click', () => setEditorMode(!editorMode));
             document.getElementById('editor-move').addEventListener('click', () => setEditorTransformMode('translate'));
             document.getElementById('editor-rotate').addEventListener('click', () => setEditorTransformMode('rotate'));
+            const externalAssetPresetSelect = document.getElementById('editor-asset-preset');
+            EXTERNAL_ASSET_PRESETS.forEach(asset => {
+                const option = document.createElement('option');
+                option.value = asset.id;
+                option.textContent = `${asset.name} · ${asset.license}`;
+                externalAssetPresetSelect.append(option);
+            });
+
+            function addExternalEditorAsset(assetInput) {
+                try {
+                    const asset = normalizeExternalAsset(assetInput);
+                    const type = asset.kind === 'image' ? 'externalImage' : 'externalModel';
+                    const group = createEditorObject(type, '', null, false, null, asset);
+                    selectEditable(group);
+                    pushEditorUndo('Add external asset', () => {
+                        releaseSelectionPivot();
+                        removeEditable(group);
+                        selectedEditables.clear();
+                        rebuildSelectionTransform();
+                    });
+                    saveEditorLayout(`เพิ่ม “${asset.name}” แล้ว · กำลังโหลดจากเว็บต้นทาง`);
+                } catch (error) {
+                    editorStatus.textContent = error.message || 'เพิ่ม URL ภายนอกไม่สำเร็จ';
+                }
+            }
+
+            document.getElementById('editor-add-preset').addEventListener('click', () => {
+                const preset = externalAssetPreset(externalAssetPresetSelect.value);
+                if (!preset) return;
+                addExternalEditorAsset({ ...preset, presetId: preset.id });
+            });
+            document.getElementById('editor-add-url').addEventListener('click', () => {
+                addExternalEditorAsset({
+                    kind: document.getElementById('editor-asset-kind').value,
+                    url: document.getElementById('editor-asset-url').value,
+                    name: document.getElementById('editor-asset-name').value || undefined,
+                    targetSize: document.getElementById('editor-asset-size').value
+                });
+            });
             document.getElementById('editor-add').addEventListener('click', () => {
                 const type = document.getElementById('editor-add-type').value;
                 const group = createEditorObject(type);
@@ -4589,13 +5143,17 @@ import * as THREE from 'three';
             initCollapsiblePanel('reference-tools', 'reference-tools-toggle');
             ['viewer-fullscreen', 'editor-fullscreen'].forEach(id => document.getElementById(id).addEventListener('click', toggleFullscreen));
             document.addEventListener('fullscreenchange', () => {
-                const presentationMode = !!document.fullscreenElement;
+                const fullscreenActive = !!document.fullscreenElement;
+                if (!fullscreenActive && presentationShowState.active) {
+                    stopPresentationShow({ exitFullscreen: false });
+                }
+                const presentationMode = fullscreenActive || presentationShowState.active;
                 document.body.classList.toggle('presentation-mode', presentationMode);
                 transformControls.visible = !presentationMode;
                 selectionHighlightGroup.visible = !presentationMode;
                 ['viewer-fullscreen', 'editor-fullscreen'].forEach(id => {
-                    document.getElementById(id).textContent = document.fullscreenElement ? '⛶ ออกจากเต็มจอ' : '⛶ เต็มหน้าจอ';
-                    document.getElementById(id).setAttribute('aria-pressed', String(!!document.fullscreenElement));
+                    document.getElementById(id).textContent = fullscreenActive ? '⛶ ออกจากเต็มจอ' : '⛶ เต็มหน้าจอ';
+                    document.getElementById(id).setAttribute('aria-pressed', String(fullscreenActive));
                 });
                 window.dispatchEvent(new Event('resize'));
             });
@@ -4723,6 +5281,751 @@ import * as THREE from 'three';
 
             let transition = null;
             let activeViewKey = Object.hasOwn(views, startupViewKey) ? startupViewKey : 'aerial';
+            const presentationShow = document.getElementById('presentation-show');
+            const presentationWelcome = document.getElementById('presentation-welcome');
+            const presentationGreeting = document.getElementById('presentation-greeting');
+            const presentationSubtitle = document.getElementById('presentation-subtitle');
+            const presentationTime = document.getElementById('presentation-time');
+            const presentationDate = document.getElementById('presentation-date');
+            const presentationTimezone = document.getElementById('presentation-timezone');
+            const presentationProgressBar = document.getElementById('presentation-progress-bar');
+            const presentationWeather = document.getElementById('presentation-weather');
+            const presentationLayout = document.getElementById('presentation-layout');
+            const presentationFocusCard = document.getElementById('presentation-focus-card');
+            const presentationFocusCount = document.getElementById('presentation-focus-count');
+            const presentationFocusCategory = document.getElementById('presentation-focus-category');
+            const presentationFocusTitle = document.getElementById('presentation-focus-title');
+            const presentationFocusDescription = document.getElementById('presentation-focus-description');
+            const presentationFocusValue = document.getElementById('presentation-focus-value');
+            const presentationFocusZones = document.getElementById('presentation-focus-zones');
+            const presentationPrevious = document.getElementById('presentation-previous');
+            const presentationPause = document.getElementById('presentation-pause');
+            const presentationNext = document.getElementById('presentation-next');
+            const presentationLocale = 'th-TH';
+            const presentationBuildingGroups = new Map(BUILDINGS.map(item => [item.id,
+                warehouseGroups[item.id] || (item.id === 'main_office' ? office : canteen)]));
+            const PRESENTATION_TOUR_DURATION = presentationTourDuration(EXECUTIVE_TOUR_STOPS.length);
+            const presentationOpeningStart = {
+                position: new THREE.Vector3(-142, 150, 158), target: new THREE.Vector3(2, 6, 0), fov: 44
+            };
+            const presentationOverviewPositions = presentationOverviewPositionPoints
+                .map(point => new THREE.Vector3(...point));
+            const presentationOverviewTargets = presentationOverviewTargetPoints
+                .map(point => new THREE.Vector3(...point));
+            const presentationOverviewPositionCurve = new THREE.CatmullRomCurve3(
+                presentationOverviewPositions, true, 'catmullrom', .42
+            );
+            const presentationOverviewTargetCurve = new THREE.CatmullRomCurve3(
+                presentationOverviewTargets, true, 'catmullrom', .35
+            );
+            const presentationClosing = {
+                position: new THREE.Vector3(108, 168, 146), target: new THREE.Vector3(0, 5, -3), fov: 45
+            };
+            const presentationPoseBounds = new THREE.Box3();
+            const presentationPoseCenter = new THREE.Vector3();
+            const presentationPoseSize = new THREE.Vector3();
+            const presentationFront = new THREE.Vector3();
+            const presentationRight = new THREE.Vector3();
+            const presentationWorldQuaternion = new THREE.Quaternion();
+            function createPresentationStopPose(stop) {
+                const group = presentationBuildingGroups.get(stop.buildingId);
+                if (!group) return presentationOpeningStart;
+                group.updateWorldMatrix(true, true);
+                presentationPoseBounds.setFromObject(group);
+                presentationPoseBounds.getCenter(presentationPoseCenter);
+                presentationPoseBounds.getSize(presentationPoseSize);
+                group.getWorldQuaternion(presentationWorldQuaternion);
+                presentationFront.set(0, 0, 1).applyQuaternion(presentationWorldQuaternion).setY(0).normalize();
+                presentationRight.set(1, 0, 0).applyQuaternion(presentationWorldQuaternion).setY(0).normalize();
+                const distance = Math.max(30, Math.max(presentationPoseSize.x, presentationPoseSize.z) * .95 + 12) *
+                    (stop.cameraDistance || 1);
+                const target = presentationPoseCenter.clone();
+                target.y = Math.max(3.2, presentationPoseBounds.min.y + presentationPoseSize.y * .36);
+                const position = target.clone()
+                    .addScaledVector(presentationFront, distance)
+                    .addScaledVector(presentationRight, distance * (stop.cameraSide || 0));
+                position.y = target.y + Math.max(12, distance * (stop.cameraElevation || .25));
+                return {
+                    position, target, fov: stop.cameraFov || 38
+                };
+            }
+            const presentationStopPoses = EXECUTIVE_TOUR_STOPS.map(createPresentationStopPose);
+            const presentationFocusBounds = new THREE.Box3();
+            const presentationFocusAnchor = new THREE.Vector3();
+            const presentationFocusProjected = new THREE.Vector3();
+            const presentationShowState = {
+                active: false,
+                startedAt: 0,
+                pausedAt: 0,
+                paused: false,
+                currentGreeting: -1,
+                weatherStep: -1,
+                currentStop: -2,
+                messagePhase: '',
+                lastClockUpdate: 0,
+                layoutVisible: false,
+                environmentTransition: null,
+                previous: null
+            };
+
+            function capturePresentationEnvironmentAppearance() {
+                return {
+                    background: scene.background.clone(),
+                    fog: scene.fog?.isFogExp2
+                        ? { color: scene.fog.color.clone(), density: scene.fog.density }
+                        : null,
+                    ambientColor: ambient.color.clone(),
+                    ambientGroundColor: ambient.groundColor.clone(),
+                    ambientIntensity: ambient.intensity,
+                    sunColor: sun.color.clone(),
+                    sunPosition: sun.position.clone(),
+                    sunIntensity: sun.intensity,
+                    skyFillColor: skyFill.color.clone(),
+                    skyFillIntensity: skyFill.intensity,
+                    moonIntensity: moon.intensity,
+                    exposure: renderer.toneMappingExposure,
+                    rainVisible: rainField.visible,
+                    rainOpacity: rainField.visible ? .42 : 0,
+                    weatherMaterials: weatherMaterials.map(mat => ({
+                        roughness: mat.roughness, metalness: mat.metalness
+                    })),
+                    glowMaterials: glowMaterials.map(mat => ({
+                        emissive: mat.emissive.clone(), emissiveIntensity: mat.emissiveIntensity
+                    })),
+                    lampEmitterIntensity: lampEmitterMaterial.emissiveIntensity,
+                    siteLights: siteNightLights.map(light => light.intensity),
+                    buildingLights: buildingNightLights.map(light => light.intensity),
+                    vehicleLights: movingVehicles.map(actor => actor.headlight.intensity)
+                };
+            }
+
+            function createPresentationEnvironmentAppearance(mode) {
+                const night = mode === 'night';
+                const rain = mode === 'rain';
+                const fog = mode === 'fog';
+                const values = night ? {
+                    background: '#061426', fogColor: '#07192b', fogDensity: .0023,
+                    ambient: '#91b1db', ground: '#263b4d', ambientIntensity: 1.2,
+                    sun: '#8b9fbd', sunPosition: [-85, 145, 65], sunIntensity: .1,
+                    sky: '#3c5f91', skyIntensity: .2, moon: 2.4, exposure: 1.12,
+                    siteLights: 24, buildingLights: 28, vehicleLights: 3.4
+                } : rain ? {
+                    background: '#718896', fogColor: '#8295a0', fogDensity: .0034,
+                    ambient: '#c5d8e2', ground: '#566266', ambientIntensity: 1.18,
+                    sun: '#c8d8e0', sunPosition: [-55, 110, 70], sunIntensity: .7,
+                    sky: '#9cb6c4', skyIntensity: .34, moon: 0, exposure: .96,
+                    siteLights: 2.8, buildingLights: 0, vehicleLights: 2.5
+                } : fog ? {
+                    background: '#d3dde0', fogColor: '#d3dde0', fogDensity: .0062,
+                    ambient: '#f2f7f7', ground: '#9ba6a2', ambientIntensity: 1.85,
+                    sun: '#e6eeee', sunPosition: [-70, 120, 65], sunIntensity: .82,
+                    sky: '#d9e5e8', skyIntensity: .4, moon: 0, exposure: 1.02,
+                    siteLights: 1.2, buildingLights: 0, vehicleLights: 2.1
+                } : {
+                    background: '#c8e4f3', fogColor: null, fogDensity: 0,
+                    ambient: '#ffffff', ground: '#73805f', ambientIntensity: 2.45,
+                    sun: '#fff6df', sunPosition: [-85, 145, 65], sunIntensity: 3.35,
+                    sky: '#b8dcff', skyIntensity: .58, moon: 0, exposure: 1.12,
+                    siteLights: 0, buildingLights: 0, vehicleLights: 0
+                };
+                return {
+                    background: new THREE.Color(values.background),
+                    fog: values.fogColor
+                        ? { color: new THREE.Color(values.fogColor), density: values.fogDensity }
+                        : null,
+                    ambientColor: new THREE.Color(values.ambient),
+                    ambientGroundColor: new THREE.Color(values.ground),
+                    ambientIntensity: values.ambientIntensity,
+                    sunColor: new THREE.Color(values.sun),
+                    sunPosition: new THREE.Vector3(...values.sunPosition),
+                    sunIntensity: values.sunIntensity,
+                    skyFillColor: new THREE.Color(values.sky),
+                    skyFillIntensity: values.skyIntensity,
+                    moonIntensity: values.moon,
+                    exposure: values.exposure,
+                    rainVisible: rain,
+                    rainOpacity: rain ? .42 : 0,
+                    weatherMaterials: weatherMaterials.map(mat => ({
+                        roughness: rain ? Math.min(.3, mat.userData.dryRoughness) : mat.userData.dryRoughness,
+                        metalness: rain ? Math.min(1, mat.userData.dryMetalness + .2) : mat.userData.dryMetalness
+                    })),
+                    glowMaterials: glowMaterials.map((_, index) => ({
+                        emissive: new THREE.Color(night ? (index < 2 ? '#245d8c' : '#438db7') : '#000000'),
+                        emissiveIntensity: night ? (index < 2 ? 1.25 : 1.9) : 0
+                    })),
+                    lampEmitterIntensity: night ? 3.2 : 0,
+                    siteLights: siteNightLights.map(() => values.siteLights),
+                    buildingLights: buildingNightLights.map(() => values.buildingLights),
+                    vehicleLights: movingVehicles.map(() => values.vehicleLights)
+                };
+            }
+
+            function applyPresentationEnvironmentAppearance(state) {
+                scene.background.copy(state.background);
+                if (state.fog) {
+                    if (!scene.fog?.isFogExp2) scene.fog = new THREE.FogExp2(state.fog.color, state.fog.density);
+                    else {
+                        scene.fog.color.copy(state.fog.color);
+                        scene.fog.density = state.fog.density;
+                    }
+                } else scene.fog = null;
+                ambient.color.copy(state.ambientColor);
+                ambient.groundColor.copy(state.ambientGroundColor);
+                ambient.intensity = state.ambientIntensity;
+                sun.color.copy(state.sunColor);
+                sun.position.copy(state.sunPosition);
+                sun.intensity = state.sunIntensity;
+                skyFill.color.copy(state.skyFillColor);
+                skyFill.intensity = state.skyFillIntensity;
+                moon.intensity = state.moonIntensity;
+                renderer.toneMappingExposure = state.exposure;
+                rainField.visible = state.rainVisible;
+                rainMaterial.opacity = state.rainOpacity;
+                weatherMaterials.forEach((mat, index) => {
+                    mat.roughness = state.weatherMaterials[index].roughness;
+                    mat.metalness = state.weatherMaterials[index].metalness;
+                });
+                glowMaterials.forEach((mat, index) => {
+                    mat.emissive.copy(state.glowMaterials[index].emissive);
+                    mat.emissiveIntensity = state.glowMaterials[index].emissiveIntensity;
+                });
+                lampEmitterMaterial.emissiveIntensity = state.lampEmitterIntensity;
+                siteNightLights.forEach((light, index) => {
+                    light.intensity = state.siteLights[index];
+                    light.visible = light.intensity > .001;
+                });
+                buildingNightLights.forEach((light, index) => {
+                    light.intensity = state.buildingLights[index];
+                    light.visible = light.intensity > .001;
+                });
+                movingVehicles.forEach((actor, index) => {
+                    actor.headlight.intensity = state.vehicleLights[index];
+                    actor.headlight.visible = actor.headlight.intensity > .001;
+                });
+            }
+
+            function beginPresentationEnvironmentTransition(mode) {
+                const from = capturePresentationEnvironmentAppearance();
+                const to = createPresentationEnvironmentAppearance(mode);
+                environmentMode = mode;
+                // Shadow-map refreshes are the most expensive part of the weather change.
+                // Keep them only for the daylight target; other modes use fill and point lights.
+                sun.castShadow = mode === 'day';
+                moon.castShadow = false;
+                renderer.shadowMap.needsUpdate = sun.castShadow;
+                const fromFogColor = from.fog?.color || from.background;
+                const transitionFog = scene.fog?.isFogExp2
+                    ? scene.fog
+                    : new THREE.FogExp2(fromFogColor, from.fog?.density || .000001);
+                scene.fog = transitionFog;
+                rainField.visible = from.rainVisible || to.rainVisible;
+                siteNightLights.forEach((light, index) => {
+                    light.visible = from.siteLights[index] > .001 || to.siteLights[index] > .001;
+                });
+                buildingNightLights.forEach((light, index) => {
+                    light.visible = from.buildingLights[index] > .001 || to.buildingLights[index] > .001;
+                });
+                movingVehicles.forEach((actor, index) => {
+                    actor.headlight.visible = from.vehicleLights[index] > .001 || to.vehicleLights[index] > .001;
+                });
+                presentationShowState.environmentTransition = {
+                    from, to, transitionFog, startedAt: performance.now(),
+                    duration: PRESENTATION_ENVIRONMENT_TRANSITION_DURATION,
+                    lastAppliedAt: -Infinity
+                };
+            }
+
+            function updatePresentationEnvironmentTransition(now) {
+                const transitionState = presentationShowState.environmentTransition;
+                if (!transitionState) return;
+                const raw = Math.min((now - transitionState.startedAt) / transitionState.duration, 1);
+                if (raw < 1 && now - transitionState.lastAppliedAt < 1000 / 30) return;
+                transitionState.lastAppliedAt = now;
+                const ease = raw * raw * raw * (raw * (raw * 6 - 15) + 10);
+                const { from, to, transitionFog } = transitionState;
+                scene.background.copy(from.background).lerp(to.background, ease);
+                const fromFogColor = from.fog?.color || from.background;
+                const toFogColor = to.fog?.color || to.background;
+                const fogDensity = THREE.MathUtils.lerp(from.fog?.density || 0, to.fog?.density || 0, ease);
+                transitionFog.color.copy(fromFogColor).lerp(toFogColor, ease);
+                transitionFog.density = Math.max(.000001, fogDensity);
+                ambient.color.copy(from.ambientColor).lerp(to.ambientColor, ease);
+                ambient.groundColor.copy(from.ambientGroundColor).lerp(to.ambientGroundColor, ease);
+                ambient.intensity = THREE.MathUtils.lerp(from.ambientIntensity, to.ambientIntensity, ease);
+                sun.color.copy(from.sunColor).lerp(to.sunColor, ease);
+                sun.position.copy(from.sunPosition).lerp(to.sunPosition, ease);
+                sun.intensity = THREE.MathUtils.lerp(from.sunIntensity, to.sunIntensity, ease);
+                skyFill.color.copy(from.skyFillColor).lerp(to.skyFillColor, ease);
+                skyFill.intensity = THREE.MathUtils.lerp(from.skyFillIntensity, to.skyFillIntensity, ease);
+                moon.intensity = THREE.MathUtils.lerp(from.moonIntensity, to.moonIntensity, ease);
+                renderer.toneMappingExposure = THREE.MathUtils.lerp(from.exposure, to.exposure, ease);
+                rainMaterial.opacity = THREE.MathUtils.lerp(from.rainOpacity, to.rainOpacity, ease);
+                weatherMaterials.forEach((mat, index) => {
+                    mat.roughness = THREE.MathUtils.lerp(
+                        from.weatherMaterials[index].roughness, to.weatherMaterials[index].roughness, ease
+                    );
+                    mat.metalness = THREE.MathUtils.lerp(
+                        from.weatherMaterials[index].metalness, to.weatherMaterials[index].metalness, ease
+                    );
+                });
+                glowMaterials.forEach((mat, index) => {
+                    mat.emissive.copy(from.glowMaterials[index].emissive)
+                        .lerp(to.glowMaterials[index].emissive, ease);
+                    mat.emissiveIntensity = THREE.MathUtils.lerp(
+                        from.glowMaterials[index].emissiveIntensity,
+                        to.glowMaterials[index].emissiveIntensity,
+                        ease
+                    );
+                });
+                lampEmitterMaterial.emissiveIntensity = THREE.MathUtils.lerp(
+                    from.lampEmitterIntensity, to.lampEmitterIntensity, ease
+                );
+                siteNightLights.forEach((light, index) => {
+                    light.intensity = THREE.MathUtils.lerp(from.siteLights[index], to.siteLights[index], ease);
+                });
+                buildingNightLights.forEach((light, index) => {
+                    light.intensity = THREE.MathUtils.lerp(
+                        from.buildingLights[index], to.buildingLights[index], ease
+                    );
+                });
+                movingVehicles.forEach((actor, index) => {
+                    actor.headlight.intensity = THREE.MathUtils.lerp(
+                        from.vehicleLights[index], to.vehicleLights[index], ease
+                    );
+                });
+                if (raw >= 1) {
+                    applyPresentationEnvironmentAppearance(to);
+                    presentationShowState.environmentTransition = null;
+                }
+            }
+
+            function setPresentationWeatherStep(step) {
+                if (presentationShowState.weatherStep === step) return;
+                presentationShowState.weatherStep = step;
+                const mode = presentationWeatherSequence[step % presentationWeatherSequence.length];
+                presentationWeather.textContent = presentationEnvironmentLabels[mode];
+                if (mode !== environmentMode) beginPresentationEnvironmentTransition(mode);
+            }
+
+            function setPresentationBuildingWeather() {
+                if (presentationShowState.weatherStep === -2) return;
+                presentationShowState.weatherStep = -2;
+                presentationWeather.textContent = '☀ DAY · EXECUTIVE TOUR';
+                if (environmentMode !== 'day') beginPresentationEnvironmentTransition('day');
+            }
+
+            function updatePresentationClock(now = new Date()) {
+                const locale = presentationGreetings[presentationShowState.currentGreeting]?.locale || presentationLocale;
+                presentationTime.textContent = new Intl.DateTimeFormat(locale, {
+                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+                }).format(now);
+                presentationDate.textContent = new Intl.DateTimeFormat(locale, {
+                    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+                }).format(now);
+                const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local time';
+                presentationTimezone.textContent = zone.replaceAll('_', ' ');
+            }
+
+            function setPresentationMessage(phase) {
+                if (presentationShowState.messagePhase === phase) return;
+                presentationShowState.messagePhase = phase;
+                presentationWelcome.classList.remove('is-visible');
+                if (phase === 'opening') {
+                    presentationGreeting.textContent = 'TDK Industrial';
+                    presentationSubtitle.textContent = 'Executive Guided Tour · ภาพรวมกระบวนการสำคัญของโรงงาน';
+                } else if (phase === 'closing') {
+                    presentationGreeting.textContent = 'Precision · Efficiency · Sustainable Growth';
+                    presentationSubtitle.textContent = 'ระบบงานที่เชื่อมโยง เพื่อการเติบโตอย่างยั่งยืน';
+                } else return;
+                requestAnimationFrame(() => {
+                    if (presentationShowState.active && presentationShowState.messagePhase === phase) {
+                        presentationWelcome.classList.add('is-visible');
+                    }
+                });
+            }
+
+            function setPresentationGreeting(index, visible) {
+                const normalizedIndex = index % presentationGreetings.length;
+                if (presentationShowState.currentGreeting !== normalizedIndex) {
+                    const item = presentationGreetings[normalizedIndex];
+                    presentationShowState.currentGreeting = normalizedIndex;
+                    presentationShowState.messagePhase = `greeting-${normalizedIndex}`;
+                    presentationGreeting.textContent = item.greeting;
+                    presentationSubtitle.textContent = item.subtitle;
+                    updatePresentationClock();
+                }
+                presentationWelcome.classList.toggle('is-visible', visible);
+            }
+
+            function setPresentationFocus(index) {
+                if (presentationShowState.currentStop === index) return;
+                presentationShowState.currentStop = index;
+                presentationFocusCard.classList.remove('is-visible');
+                presentationFocusCard.classList.remove('is-settled');
+                if (index < 0 || index >= EXECUTIVE_TOUR_STOPS.length) {
+                    presentationFocusCard.hidden = true;
+                    presentationFocusCard.classList.remove('is-visible');
+                    presentationShow.classList.remove('focus-visible');
+                    return;
+                }
+                const stop = EXECUTIVE_TOUR_STOPS[index];
+                const group = presentationBuildingGroups.get(stop.buildingId);
+                const plan = BUILDING_INTERIORS[stop.buildingId];
+                if (group) {
+                    group.updateWorldMatrix(true, true);
+                    presentationFocusBounds.setFromObject(group).expandByScalar(.8);
+                    presentationFocusBounds.getCenter(presentationPoseCenter);
+                    presentationFocusBounds.getSize(presentationPoseSize);
+                    presentationFocusAnchor.copy(presentationPoseCenter);
+                    presentationFocusAnchor.y = presentationFocusBounds.min.y + presentationPoseSize.y * .58;
+                }
+                presentationFocusCard.dataset.placement = stop.textPlacement || 'bottom-left';
+                presentationFocusCount.textContent = `${String(index + 1).padStart(2, '0')} / ${String(EXECUTIVE_TOUR_STOPS.length).padStart(2, '0')}`;
+                presentationFocusCategory.textContent = stop.category;
+                presentationFocusTitle.textContent = stop.title;
+                presentationFocusDescription.textContent = stop.description;
+                presentationFocusValue.textContent = stop.value;
+                presentationFocusZones.replaceChildren(...(plan?.zones || []).map(zone => {
+                    const chip = document.createElement('span');
+                    chip.textContent = zone.name;
+                    return chip;
+                }));
+                presentationFocusCard.hidden = false;
+            }
+
+            function updatePresentationFocusOrigin() {
+                if (presentationFocusCard.hidden) return;
+                perspectiveCamera.updateMatrixWorld();
+                presentationFocusProjected.copy(presentationFocusAnchor).project(perspectiveCamera);
+                const anchorX = (presentationFocusProjected.x * .5 + .5) * innerWidth;
+                const anchorY = (-presentationFocusProjected.y * .5 + .5) * innerHeight;
+                const rect = presentationFocusCard.getBoundingClientRect();
+                const rightAligned = presentationFocusCard.dataset.placement?.endsWith('right');
+                const copyX = rightAligned ? rect.right : rect.left;
+                const copyY = rect.top + Math.min(rect.height * .48, 150);
+                const flyX = THREE.MathUtils.clamp(anchorX - copyX, -280, 280);
+                const flyY = THREE.MathUtils.clamp(anchorY - copyY, -190, 190);
+                presentationFocusCard.style.setProperty('--focus-fly-x', `${flyX.toFixed(1)}px`);
+                presentationFocusCard.style.setProperty('--focus-fly-y', `${flyY.toFixed(1)}px`);
+                presentationFocusCard.style.setProperty('--focus-anchor-x', `${anchorX.toFixed(1)}px`);
+                presentationFocusCard.style.setProperty('--focus-anchor-y', `${anchorY.toFixed(1)}px`);
+            }
+
+            function setPresentationFocusVisible(visible, settled = false) {
+                if (presentationFocusCard.hidden) visible = false;
+                if (presentationFocusCard.classList.contains('is-visible') === visible) {
+                    if (visible) {
+                        presentationFocusCard.classList.toggle('is-settled', settled);
+                        updatePresentationFocusOrigin();
+                    }
+                    return;
+                }
+                presentationFocusCard.classList.remove('is-visible');
+                presentationFocusCard.classList.toggle('is-settled', visible && settled);
+                presentationShow.classList.toggle('focus-visible', visible);
+                if (!visible) return;
+                updatePresentationFocusOrigin();
+                requestAnimationFrame(() => {
+                    if (presentationShowState.active && !presentationFocusCard.hidden) {
+                        presentationFocusCard.classList.add('is-visible');
+                    }
+                });
+            }
+
+            function presentationEase(value) {
+                const t = THREE.MathUtils.clamp(value, 0, 1);
+                return t * t * t * (t * (t * 6 - 15) + 10);
+            }
+
+            function applyPresentationPose(from, to, amount, orbit = 0) {
+                const eased = presentationEase(amount);
+                perspectiveCamera.position.lerpVectors(from.position, to.position, eased);
+                controls.target.lerpVectors(from.target, to.target, eased);
+                if (orbit) {
+                    const offset = perspectiveCamera.position.clone().sub(controls.target);
+                    offset.applyAxisAngle(THREE.Object3D.DEFAULT_UP, orbit);
+                    perspectiveCamera.position.copy(controls.target).add(offset);
+                }
+                const nextFov = THREE.MathUtils.lerp(from.fov, to.fov, eased);
+                if (Math.abs(perspectiveCamera.fov - nextFov) > .01) {
+                    perspectiveCamera.fov = nextFov;
+                    perspectiveCamera.updateProjectionMatrix();
+                }
+            }
+
+            function updatePresentationShow(now) {
+                if (!presentationShowState.active) return;
+                const timelineNow = presentationShowState.paused ? presentationShowState.pausedAt : now;
+                const elapsed = ((timelineNow - presentationShowState.startedAt) % PRESENTATION_TOUR_DURATION +
+                    PRESENTATION_TOUR_DURATION) % PRESENTATION_TOUR_DURATION;
+                const buildingSequenceStart = PRESENTATION_OPENING_DURATION +
+                    PRESENTATION_LAYOUT_BRIDGE_DURATION;
+                const stopSequenceEnd = buildingSequenceStart +
+                    EXECUTIVE_TOUR_STOPS.length * PRESENTATION_STOP_DURATION;
+                let layoutVisible = false;
+                if (elapsed < PRESENTATION_OPENING_DURATION) {
+                    const greetingIndex = Math.floor(elapsed / PRESENTATION_GREETING_DURATION) %
+                        presentationGreetings.length;
+                    const greetingElapsed = elapsed % PRESENTATION_GREETING_DURATION;
+                    // Repeat the Version 1 master layout between greetings and around every
+                    // weather change. The lead-in also masks the heaviest scene transition.
+                    const welcomeLayoutVisible = elapsed >= PRESENTATION_GREETING_VISIBLE_DURATION &&
+                        elapsed < PRESENTATION_GREETING_VISIBLE_DURATION +
+                            PRESENTATION_LAYOUT_BRIDGE_DURATION;
+                    const weatherLayoutPhase = (elapsed + PRESENTATION_LAYOUT_TRANSITION_LEAD) %
+                        PRESENTATION_WEATHER_DURATION;
+                    const weatherLayoutVisible = elapsed >= PRESENTATION_WEATHER_DURATION -
+                        PRESENTATION_LAYOUT_TRANSITION_LEAD &&
+                        weatherLayoutPhase < PRESENTATION_LAYOUT_BRIDGE_DURATION;
+                    layoutVisible = welcomeLayoutVisible || weatherLayoutVisible;
+                    setPresentationGreeting(
+                        greetingIndex,
+                        greetingElapsed < PRESENTATION_GREETING_VISIBLE_DURATION && !layoutVisible
+                    );
+                    setPresentationWeatherStep(Math.floor(elapsed / PRESENTATION_WEATHER_DURATION));
+                    setPresentationFocus(-1);
+                    const overviewProgress = elapsed / PRESENTATION_OPENING_DURATION;
+                    perspectiveCamera.position.copy(
+                        presentationOverviewPositionCurve.getPointAt(overviewProgress)
+                    );
+                    controls.target.copy(presentationOverviewTargetCurve.getPointAt(overviewProgress));
+                    const overviewFov = 42 + Math.sin(overviewProgress * Math.PI * 4) * 1.8;
+                    if (Math.abs(perspectiveCamera.fov - overviewFov) > .01) {
+                        perspectiveCamera.fov = overviewFov;
+                        perspectiveCamera.updateProjectionMatrix();
+                    }
+                } else if (elapsed < buildingSequenceStart) {
+                    setPresentationBuildingWeather();
+                    setPresentationMessage('');
+                    presentationShowState.currentGreeting = -1;
+                    presentationWelcome.classList.remove('is-visible');
+                    setPresentationFocus(-1);
+                    layoutVisible = true;
+                    const bridgeProgress = (elapsed - PRESENTATION_OPENING_DURATION) /
+                        PRESENTATION_LAYOUT_BRIDGE_DURATION;
+                    applyPresentationPose(
+                        presentationOpeningStart, presentationOpeningStart, 1,
+                        Math.sin(bridgeProgress * Math.PI) * .012
+                    );
+                } else if (elapsed < stopSequenceEnd) {
+                    setPresentationBuildingWeather();
+                    setPresentationMessage('');
+                    presentationShowState.currentGreeting = -1;
+                    presentationWelcome.classList.remove('is-visible');
+                    const sequenceElapsed = elapsed - buildingSequenceStart;
+                    const stopIndex = Math.floor(sequenceElapsed / PRESENTATION_STOP_DURATION);
+                    const localElapsed = sequenceElapsed % PRESENTATION_STOP_DURATION;
+                    const currentPose = presentationStopPoses[stopIndex];
+                    const previousPose = stopIndex === 0
+                        ? presentationOpeningStart
+                        : presentationStopPoses[stopIndex - 1];
+                    setPresentationFocus(stopIndex);
+                    if (localElapsed < PRESENTATION_TRAVEL_DURATION) {
+                        applyPresentationPose(previousPose, currentPose, localElapsed / PRESENTATION_TRAVEL_DURATION);
+                    } else {
+                        const holdProgress = (localElapsed - PRESENTATION_TRAVEL_DURATION) /
+                            (PRESENTATION_STOP_DURATION - PRESENTATION_TRAVEL_DURATION);
+                        applyPresentationPose(currentPose, currentPose, 1, Math.sin(holdProgress * Math.PI) * .025);
+                    }
+                    const focusRevealAt = PRESENTATION_TRAVEL_DURATION * .68;
+                    setPresentationFocusVisible(
+                        localElapsed >= focusRevealAt,
+                        localElapsed >= focusRevealAt + 1600
+                    );
+                } else {
+                    const closingElapsed = elapsed - stopSequenceEnd;
+                    setPresentationBuildingWeather();
+                    presentationShowState.currentGreeting = -1;
+                    if (closingElapsed < 2200) setPresentationMessage('closing');
+                    else {
+                        setPresentationMessage('');
+                        presentationWelcome.classList.remove('is-visible');
+                    }
+                    setPresentationFocus(-1);
+                    applyPresentationPose(
+                        presentationStopPoses.at(-1), presentationClosing,
+                        Math.min(closingElapsed / 3600, 1)
+                    );
+                }
+                presentationProgressBar.style.width = `${elapsed / PRESENTATION_TOUR_DURATION * 100}%`;
+                if (layoutVisible !== presentationShowState.layoutVisible) {
+                    presentationShowState.layoutVisible = layoutVisible;
+                    presentationLayout.classList.toggle('is-visible', layoutVisible);
+                    presentationShow.classList.toggle('layout-visible', layoutVisible);
+                }
+                updatePresentationEnvironmentTransition(now);
+                if (now - presentationShowState.lastClockUpdate >= 250) {
+                    presentationShowState.lastClockUpdate = now;
+                    updatePresentationClock();
+                }
+            }
+
+            async function startPresentationShow({ fullscreen = true } = {}) {
+                if (presentationShowState.active) return;
+                if (gameMode) setGameMode(false);
+                if (activeInterior) closeInterior();
+                presentationShowState.previous = {
+                    camera,
+                    position: camera.position.clone(),
+                    target: controls.target.clone(),
+                    fov: perspectiveCamera.fov,
+                    zoom: camera.zoom,
+                    controlsEnabled: controls.enabled,
+                    damping: controls.enableDamping,
+                    transformVisible: transformControls.visible,
+                    selectionVisible: selectionHighlightGroup.visible,
+                    environment: environmentMode,
+                    warm: document.getElementById('warm').checked
+                };
+                presentationShowState.active = true;
+                presentationShowState.startedAt = performance.now();
+                presentationShowState.pausedAt = 0;
+                presentationShowState.paused = false;
+                presentationShowState.lastClockUpdate = 0;
+                presentationShowState.currentGreeting = -1;
+                presentationShowState.weatherStep = -1;
+                presentationShowState.currentStop = -2;
+                presentationShowState.messagePhase = '';
+                presentationShowState.layoutVisible = false;
+                presentationShowState.environmentTransition = null;
+                transition = null;
+                setActiveCamera(perspectiveCamera);
+                perspectiveCamera.position.copy(presentationOpeningStart.position);
+                controls.target.copy(presentationOpeningStart.target);
+                perspectiveCamera.fov = presentationOpeningStart.fov;
+                perspectiveCamera.updateProjectionMatrix();
+                controls.enabled = false;
+                controls.enableDamping = false;
+                transformControls.visible = false;
+                selectionHighlightGroup.visible = false;
+                document.body.classList.add('presentation-mode', 'presentation-show-active');
+                presentationShow.hidden = false;
+                presentationFocusCard.hidden = true;
+                presentationLayout.classList.remove('is-visible');
+                presentationShow.classList.remove('layout-visible');
+                presentationShow.classList.remove('focus-visible');
+                presentationPause.textContent = 'Ⅱ';
+                presentationPause.title = 'หยุดชั่วคราว';
+                presentationPause.setAttribute('aria-label', 'หยุดชั่วคราว');
+                presentationPause.setAttribute('aria-pressed', 'false');
+                document.querySelectorAll('.presentation-start').forEach(button => {
+                    button.classList.add('active');
+                    button.setAttribute('aria-pressed', 'true');
+                });
+                applyEnvironment('day');
+                presentationWeather.textContent = '☀ DAY · EXECUTIVE TOUR';
+                updatePresentationClock();
+                updatePresentationShow(presentationShowState.startedAt);
+                if (fullscreen && !document.fullscreenElement && document.documentElement.requestFullscreen) {
+                    try {
+                        await document.documentElement.requestFullscreen();
+                    } catch (_) {
+                        // The cinematic show still fills the browser viewport when fullscreen is unavailable.
+                    }
+                }
+                window.dispatchEvent(new Event('resize'));
+            }
+
+            async function stopPresentationShow({ exitFullscreen = true } = {}) {
+                if (!presentationShowState.active) return;
+                const previous = presentationShowState.previous;
+                presentationShowState.active = false;
+                presentationShowState.environmentTransition = null;
+                presentationShowState.paused = false;
+                presentationShow.hidden = true;
+                presentationWelcome.classList.remove('is-visible');
+                presentationFocusCard.classList.remove('is-visible');
+                presentationFocusCard.hidden = true;
+                presentationLayout.classList.remove('is-visible');
+                presentationShow.classList.remove('layout-visible');
+                presentationShow.classList.remove('focus-visible');
+                document.body.classList.remove('presentation-show-active');
+                document.querySelectorAll('.presentation-start').forEach(button => {
+                    button.classList.remove('active');
+                    button.setAttribute('aria-pressed', 'false');
+                });
+                if (previous) {
+                    setActiveCamera(previous.camera);
+                    camera.position.copy(previous.position);
+                    controls.target.copy(previous.target);
+                    camera.zoom = previous.zoom;
+                    if (camera === perspectiveCamera) perspectiveCamera.fov = previous.fov;
+                    camera.updateProjectionMatrix();
+                    controls.enabled = previous.controlsEnabled;
+                    controls.enableDamping = previous.damping;
+                    transformControls.visible = previous.transformVisible;
+                    selectionHighlightGroup.visible = previous.selectionVisible;
+                    controls.update();
+                    const warmToggle = document.getElementById('warm');
+                    warmToggle.checked = previous.warm;
+                    applyEnvironment(previous.environment);
+                    rainMaterial.opacity = .42;
+                    if (previous.environment === 'day' && previous.warm) {
+                        warmToggle.dispatchEvent(new Event('change'));
+                    }
+                }
+                if (exitFullscreen && document.fullscreenElement) {
+                    try { await document.exitFullscreen(); } catch (_) { /* Keep the restored in-page view. */ }
+                }
+                if (!document.fullscreenElement) document.body.classList.remove('presentation-mode');
+                window.dispatchEvent(new Event('resize'));
+            }
+
+            ['presentation-start', 'editor-presentation'].forEach(id => {
+                document.getElementById(id).addEventListener('click', () => startPresentationShow());
+            });
+            function seekPresentationStop(direction) {
+                if (!presentationShowState.active) return;
+                const now = performance.now();
+                const timelineNow = presentationShowState.paused ? presentationShowState.pausedAt : now;
+                const elapsed = ((timelineNow - presentationShowState.startedAt) % PRESENTATION_TOUR_DURATION +
+                    PRESENTATION_TOUR_DURATION) % PRESENTATION_TOUR_DURATION;
+                let current;
+                const buildingSequenceStart = PRESENTATION_OPENING_DURATION +
+                    PRESENTATION_LAYOUT_BRIDGE_DURATION;
+                if (elapsed < buildingSequenceStart) current = direction > 0 ? -1 : 0;
+                else current = THREE.MathUtils.clamp(
+                    Math.floor((elapsed - buildingSequenceStart) / PRESENTATION_STOP_DURATION),
+                    0, EXECUTIVE_TOUR_STOPS.length - 1
+                );
+                const next = (current + direction + EXECUTIVE_TOUR_STOPS.length) % EXECUTIVE_TOUR_STOPS.length;
+                const seekTime = buildingSequenceStart + next * PRESENTATION_STOP_DURATION +
+                    PRESENTATION_TRAVEL_DURATION;
+                if (presentationShowState.paused) {
+                    presentationShowState.pausedAt = now;
+                    presentationShowState.startedAt = now - seekTime;
+                } else presentationShowState.startedAt = now - seekTime;
+                presentationShowState.currentStop = -2;
+                updatePresentationShow(now);
+            }
+            presentationPrevious.addEventListener('click', () => seekPresentationStop(-1));
+            presentationNext.addEventListener('click', () => seekPresentationStop(1));
+            presentationPause.addEventListener('click', () => {
+                if (!presentationShowState.active) return;
+                const now = performance.now();
+                if (presentationShowState.paused) {
+                    presentationShowState.startedAt += now - presentationShowState.pausedAt;
+                    presentationShowState.pausedAt = 0;
+                    presentationShowState.paused = false;
+                    presentationPause.textContent = 'Ⅱ';
+                    presentationPause.title = 'หยุดชั่วคราว';
+                    presentationPause.setAttribute('aria-label', 'หยุดชั่วคราว');
+                    presentationPause.setAttribute('aria-pressed', 'false');
+                } else {
+                    presentationShowState.paused = true;
+                    presentationShowState.pausedAt = now;
+                    presentationPause.textContent = '▶';
+                    presentationPause.title = 'เล่นต่อ';
+                    presentationPause.setAttribute('aria-label', 'เล่นต่อ');
+                    presentationPause.setAttribute('aria-pressed', 'true');
+                }
+            });
+            window.addEventListener('keydown', event => {
+                if (event.code === 'Escape' && presentationShowState.active && !document.fullscreenElement) {
+                    event.preventDefault();
+                    stopPresentationShow({ exitFullscreen: false });
+                }
+            });
             const interiorPanel = document.getElementById('interior-panel');
             const interiorZones = document.getElementById('interior-zones');
             const interiorDetail = document.getElementById('interior-detail');
@@ -4978,12 +6281,19 @@ import * as THREE from 'three';
                     const toggle = document.getElementById('activity-toggle');
                     if (toggle) toggle.checked = activityEnabled;
                 },
+                startPresentation: options => startPresentationShow(options),
+                stopPresentation: options => stopPresentationShow(options),
                 getCamera: () => camera,
                 getObject: id => editableObjects.get(id) || null,
                 openInterior, closeInterior,
                 get activeInterior() { return activeInterior?.id || null; },
-                get activeView() { return activeViewKey; }
+                get activeView() { return activeViewKey; },
+                get presentationActive() { return presentationShowState.active; }
             };
+
+            if (startupParams.get('presentation') === '1') {
+                startPresentationShow({ fullscreen: false });
+            }
 
             controls.addEventListener('start', () => { transition = null; });
 
@@ -5034,11 +6344,18 @@ import * as THREE from 'three';
                 target: [...CAMERA_PRESETS.reference.target],
                 fov: CAMERA_PRESETS.reference.fov
             };
-            const previousDefaultCameraCalibration = {
-                position: [-78, 150, 210],
-                target: [37, 2, 10],
-                fov: 40
-            };
+            const previousDefaultCameraCalibrations = [
+                {
+                    position: [-78, 150, 210],
+                    target: [37, 2, 10],
+                    fov: 40
+                },
+                {
+                    position: [8, 120, 170],
+                    target: [25, 2, 10],
+                    fov: 46
+                }
+            ];
             let cameraCalibration = {
                 position: [...defaultCameraCalibration.position],
                 target: [...defaultCameraCalibration.target],
@@ -5050,11 +6367,10 @@ import * as THREE from 'three';
                 if (Array.isArray(saved?.position) && saved.position.length === 3 && saved.position.every(Number.isFinite) &&
                     Array.isArray(saved?.target) && saved.target.length === 3 && saved.target.every(Number.isFinite) &&
                     Number.isFinite(saved?.fov)) {
-                    const isPreviousDefault = saved.position.every((value, index) =>
-                        value === previousDefaultCameraCalibration.position[index]) &&
-                        saved.target.every((value, index) =>
-                            value === previousDefaultCameraCalibration.target[index]) &&
-                        saved.fov === previousDefaultCameraCalibration.fov;
+                    const isPreviousDefault = previousDefaultCameraCalibrations.some(previous =>
+                        saved.position.every((value, index) => value === previous.position[index]) &&
+                        saved.target.every((value, index) => value === previous.target[index]) &&
+                        saved.fov === previous.fov);
                     if (!isPreviousDefault) {
                         cameraCalibration = {
                             position: [...saved.position],
@@ -5438,7 +6754,9 @@ import * as THREE from 'three';
                 const frameSeconds = clock.getDelta();
                 const dt = Math.min(frameSeconds, .05);
                 if (!document.hidden) renderQuality.sample(frameSeconds);
-                if (transition) {
+                if (presentationShowState.active) {
+                    updatePresentationShow(performance.now());
+                } else if (transition) {
                     const t = Math.min((performance.now() - transition.time) / transition.duration, 1);
                     const ease = t * t * (3 - 2 * t);
                     camera.position.lerpVectors(
@@ -5461,10 +6779,12 @@ import * as THREE from 'three';
                 updateWeather(dt);
                 updatePlayer(dt);
                 shadowRefreshElapsed += frameSeconds;
-                if (shadowRefreshElapsed >= 1 / 30) {
+                const shadowRefreshInterval = presentationShowState.active ? 1 / 10 : 1 / 30;
+                if ((sun.castShadow || moon.castShadow) &&
+                    shadowRefreshElapsed >= shadowRefreshInterval) {
                     renderer.shadowMap.needsUpdate = true;
-                    shadowRefreshElapsed %= 1 / 30;
-                }
+                    shadowRefreshElapsed %= shadowRefreshInterval;
+                } else if (!sun.castShadow && !moon.castShadow) shadowRefreshElapsed = 0;
                 if (!gameMode) controls.update(dt);
                 renderer.render(scene, camera);
             });

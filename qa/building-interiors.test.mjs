@@ -3,12 +3,38 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import * as THREE from 'three';
 import { BUILDINGS } from '../src/factory-data.js';
-import { BUILDING_INTERIORS, createBuildingInterior } from '../src/building-interiors.js';
+import {
+    BUILDING_INTERIORS, EXECUTIVE_TOUR_STOPS, createBuildingInterior
+} from '../src/building-interiors.js';
 
 const source = readFileSync(new URL('../snapshots/baseline-2026-11-05/layout.json', import.meta.url));
 assert.equal(createHash('sha256').update(source).digest('hex'),
     '263c223a07fdfa1c88ba80aed1d1e3c3dbbe9f181a1e5a89c9a8526c535fd004');
 assert.deepEqual(Object.keys(BUILDING_INTERIORS).sort(), BUILDINGS.map(item => item.id).sort());
+assert.deepEqual(BUILDING_INTERIORS.main_office.zones.map(zone => zone.id), [
+    'main-office', 'md-room', 'meeting-1', 'meeting-2', 'restrooms'
+]);
+assert.deepEqual(BUILDING_INTERIORS.canteen.zones.map(zone => zone.name), [
+    'DIE-SET Area', 'Office PD Team', 'Spare Room', 'QC Area', 'Maintenance', 'ห้องน้ำ'
+]);
+assert.deepEqual(BUILDING_INTERIORS.doke1_west.zones.map(zone => zone.name), [
+    'Tap-Line', 'Spot-Line', 'A-J Line', 'MDB', 'AIR', 'QC Area', 'ห้องน้ำ'
+]);
+assert.deepEqual(BUILDING_INTERIORS.doke1_store.zones.map(zone => zone.name), [
+    'Store', 'Office (Store)', 'Assy Rear frame', 'Coating 1', 'Powder', 'Shower', 'ห้องน้ำ'
+]);
+assert.deepEqual(BUILDING_INTERIORS.doke2_assy.zones.map(zone => zone.name), [
+    'K-Line', 'Coating 2', 'Banding Machine', 'MDB', 'AIR', 'ห้องน้ำ'
+]);
+assert.deepEqual(BUILDING_INTERIORS.rack_dome.zones.map(zone => zone.name), [
+    'พื้นที่จัดเก็บแร็ค', 'จุดรับ-จ่ายแร็ค', 'ทางเดินขนย้าย', 'พื้นที่แร็คสำรอง', 'AIR'
+]);
+assert.equal(BUILDING_INTERIORS.rack_dome.title, 'โดมเก็บแร็ค');
+assert.equal(EXECUTIVE_TOUR_STOPS.length, 6);
+assert.deepEqual(EXECUTIVE_TOUR_STOPS.map(stop => stop.buildingId), [
+    'main_office', 'canteen', 'doke1_west', 'doke1_store', 'doke2_assy', 'rack_dome'
+]);
+assert.equal(EXECUTIVE_TOUR_STOPS.at(-1).title, 'โดมเก็บแร็ค');
 
 globalThis.document = {
     createElement(type) {
@@ -50,4 +76,4 @@ for (const building of BUILDINGS) {
     model.dispose();
 }
 
-console.log('PASS: six separate interior plans fit building footprints and create pickable models');
+console.log('PASS: six executive-tour interiors match the requested areas, fit footprints, and create pickable models');

@@ -403,6 +403,8 @@ body.editing .editor-panel {
 
 .editor-coords input,
 .editor-add select,
+.external-asset-library input,
+.external-asset-library select,
 .editor-panel input[type=text],
 .object-search {
     width: 100%;
@@ -413,6 +415,58 @@ body.editing .editor-panel {
     border: 1px solid #d4dfef;
     border-radius: 8px;
     font: 12px var(--font-ui);
+}
+
+.external-asset-library {
+    margin: 9px 0 12px;
+    padding: 9px;
+    border: 1px solid #d8e4f3;
+    border-radius: 10px;
+    background: #f7faff;
+}
+
+.external-asset-library summary {
+    color: #2456a6;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.external-asset-library p,
+.external-asset-library small {
+    display: block;
+    margin: 7px 0;
+    color: var(--muted);
+    font-size: 9px;
+    line-height: 1.5;
+}
+
+.external-asset-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
+}
+
+.external-asset-row button,
+.external-asset-custom button {
+    width: auto;
+    margin: 0;
+    padding: 8px;
+    font-size: 10px;
+}
+
+.external-asset-custom {
+    display: grid;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #d8e4f3;
+}
+
+.external-asset-fields {
+    display: grid;
+    grid-template-columns: 1.2fr 1.2fr .6fr;
+    gap: 5px;
 }
 
 .editor-grid.tools {

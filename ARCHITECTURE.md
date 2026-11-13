@@ -1,7 +1,8 @@
 # TDK 3D Factory — development map
 
-`index.html` is the browser entry point and contains the page structure. The
-runtime entry point is `src/main.js`:
+The project uses Vite with pinned Three.js dependencies. `index.html` contains
+the page structure, `src/entry.js` selects viewer/editor mode and loads the
+locked canonical layout, then dynamically starts `src/main.js`:
 
 - `src/main.js` initializes the scene, gameplay, object editor and interactions.
 - `src/factory-data.js` contains the photo-estimated building footprints, camera
@@ -9,6 +10,20 @@ runtime entry point is `src/main.js`:
 - `src/viewer.css` contains the main viewer styles; `src/responsive.css` contains
   the small-screen overrides. `src/editor-workspace.css` styles the editor.
 - `src/bootstrap.js` reports module-loading errors before the app initializes.
+- `src/presentation/presentation-config.js` owns the presentation languages,
+  timing, overview path and weather sequence independently from scene code.
+
+Run `npm install` once at the project root, then use:
+
+- `npm run dev` for the local Vite development server.
+- `npm run build` for the deployable `dist/` viewer.
+- `npm run preview` to inspect the production build locally.
+- `npm run build:standalone` for the single-file embeddable runtime.
+- `npm run verify` to run the locked-layout tests and the Vite production build.
+
+The Vite build emits stable copies of runtime editor/export assets alongside
+hashed viewer assets. The standalone exporter remains separate because it must
+audit and embed the canonical layout without writing it to host localStorage.
 
 ## Small modules
 
@@ -45,8 +60,8 @@ built-in transforms reset to the corrected base layout.
 
 ## Verification
 
-Run `npm install` then `npm test` in `v7/qa`. The integration harness uses the same
-Three.js 0.169.0 as the page and a JSDOM document. It exercises editor actions,
+Run `npm run verify` at the project root. The integration harness uses the same
+Three.js 0.169.0 as the Vite app and a JSDOM document. It exercises editor actions,
 world transforms, multi-selection, history, persistence and fullscreen events.
 GPU rendering and canvas rasterization are stubbed: these checks do not replace
 visual WebGL testing in a browser. `qa/index.before-editor.html` is the source

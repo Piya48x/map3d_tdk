@@ -19,11 +19,13 @@ const moduleSource = [
     readFileSync(new URL('../src/activity-navigation.js', import.meta.url), 'utf8').replaceAll('export ', ''),
     readFileSync(new URL('../src/render-quality.js', import.meta.url), 'utf8').replaceAll('export ', ''),
     readFileSync(new URL('../src/building-interiors.js', import.meta.url), 'utf8').replaceAll('export ', ''),
+    readFileSync(new URL('../src/external-assets.js', import.meta.url), 'utf8').replaceAll('export ', ''),
+    readFileSync(new URL('../src/presentation/presentation-config.js', import.meta.url), 'utf8').replaceAll('export ', ''),
     readFileSync(new URL('../src/factory-data.js', import.meta.url), 'utf8')
         .replace(/^\s*import .*;$/gm, '')
         .replace(/^([ \t]*)export /gm, '$1'),
     readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
-        .replace(/^\s*import .*;$/gm, '')
+        .replace(/^[ \t]*import\b[\s\S]*?from[ \t]+['"][^'"]+['"];[ \t]*\r?$/gm, '')
 ].join('\n');
 const errors = [];
 function boot(saved, savedCamera, view = '', viewerOnly = false, openEditor = false) {
@@ -42,8 +44,19 @@ function boot(saved, savedCamera, view = '', viewerOnly = false, openEditor = fa
         setSize() {} setPixelRatio(value) { this.pixelRatio = value; } setAnimationLoop(fn) { this.frame = fn; } render() {}
     }
     win.THREE = { ...RealThree, WebGLRenderer: Renderer };
+    win.structuredClone = structuredClone;
     win.OrbitControls = OrbitControls;
     win.TransformControls = TransformControls;
+    win.GLTFLoader = class {
+        load(_url, onLoad) {
+            const scene = new RealThree.Group();
+            scene.add(new RealThree.Mesh(
+                new RealThree.BoxGeometry(2, 1, 4),
+                new RealThree.MeshStandardMaterial({ color: '#2470b8' })
+            ));
+            queueMicrotask(() => onLoad({ scene }));
+        }
+    };
     win.console.error = (...args) => errors.push(args.map(String).join(' '));
     win.console.warn = (...args) => { if (!String(args[0]).includes('Multiple instances')) errors.push(args.map(String).join(' ')); };
     if (saved) win.localStorage.setItem('tdk-v7-object-layout-v1', saved);
@@ -65,7 +78,12 @@ function boot(saved, savedCamera, view = '', viewerOnly = false, openEditor = fa
         get player() { return player; }, get gameMode() { return gameMode; },
         get activityActors() { return [...workers, ...movingForklifts, ...movingVehicles]; },
         get activityObstacles() { return activityObstacles; },
-        updateActivity,
+        updateActivity, updatePresentationEnvironmentTransition, updatePresentationShow,
+        get environmentTransitionStartedAt() { return presentationShowState.environmentTransition?.startedAt ?? 0; },
+        get presentationStartedAt() { return presentationShowState.startedAt; },
+        get presentationTourStops() { return EXECUTIVE_TOUR_STOPS; },
+        get presentationStopPoses() { return presentationStopPoses; },
+        get presentationBuildingGroups() { return presentationBuildingGroups; },
         get objects() { return editableObjects; } };`;
     vm.runInContext(config + movement + moduleSource.replace("            loading.style.opacity = '0';", exposed + "\n            loading.style.opacity = '0';"), context);
     assert.deepEqual(errors, [], 'Scene should initialize without runtime errors');
@@ -91,6 +109,7 @@ for (const id of ['main_office', 'doke1_west', 'doke1_store', 'doke2_assy', 'rac
     assert.equal(exterior.visible, false, `${id} exterior should be hidden for cutaway`);
     assert.equal(doc.getElementById('interior-panel').hidden, false);
     assert.ok(doc.querySelectorAll('#interior-zones button').length >= 3);
+    if (id === 'main_office') assert.equal(doc.querySelectorAll('#interior-zones button').length, 5);
     assert.ok(api.scene.getObjectByName(`Interior presentation · ${id}`));
     doc.querySelectorAll('#interior-zones button')[1].click();
     assert.equal(doc.querySelectorAll('#interior-zones button.active').length, 1);
@@ -106,7 +125,21 @@ assert.equal(win.localStorage.getItem('tdk-v7-object-layout-v1'), layoutBeforeIn
 assert.equal(win.TDK_LAYOUT.layoutWarnings.length, 0, 'Building footprints must not overlap');
 const securityBooth = api.objects.get('security-booth');
 const cardAccess = api.objects.get('security-card-access');
+const entranceMonument = api.objects.get('entrance-tdk-monument-v1');
+const entranceAvenue = api.objects.get('entrance-landscaped-avenue-v1');
 assert.ok(securityBooth && cardAccess, 'Security booth and card access should be separate editable objects');
+assert.ok(entranceMonument, 'Reference-inspired TDK entrance monument should use a stable additive ID');
+assert.ok(entranceAvenue, 'Landscaped entrance avenue should use a separate stable additive ID');
+assert.ok(entranceMonument.position.z > 78 && entranceMonument.position.x > -6,
+    'Entrance monument should stand outside the right side of the vehicle gate');
+assert.ok(entranceMonument.getObjectByName('Entrance monument panel')?.isMesh &&
+    entranceMonument.getObjectByName('Entrance monument TDK 3D logo')?.isGroup &&
+    entranceMonument.getObjectByName('Entrance monument planting bed')?.isMesh,
+    'Entrance monument should include the tall panel, raised 3D TDK branding, and landscaped island');
+assert.ok(entranceAvenue.getObjectByName('Entrance avenue red curbs')?.isInstancedMesh &&
+    entranceAvenue.getObjectByName('Entrance avenue hedges')?.isInstancedMesh &&
+    entranceAvenue.getObjectByName('Entrance avenue tree crowns')?.isInstancedMesh,
+    'Entrance avenue should include efficient instanced curbs, hedges, and trees');
 assert.equal(cardAccess.parent, api.scene, 'Card access should not be parented to the security booth');
 assert.ok(Math.abs(cardAccess.position.x - securityBooth.position.x) < 1e-6 &&
     cardAccess.position.z > securityBooth.position.z,
@@ -127,14 +160,14 @@ assert.ok(Math.abs(forestPath.position.z - api.objects.get('building-main_office
 assert.match(doc.getElementById('editor-cut').textContent, /✂️/,
     'Partial cut action should show a scissors icon');
 const buildings = Object.fromEntries(win.TDK_LAYOUT.BUILDINGS.map(building => [building.id, building]));
-near(api.camera.position.x, -158); near(api.camera.position.y, 168); near(api.camera.position.z, 198);
-near(api.camera.fov, 46); near(api.controls.target.x, 8); near(api.controls.target.y, 5); near(api.controls.target.z, -8);
+near(api.camera.position.x, 151); near(api.camera.position.y, 142); near(api.camera.position.z, 169);
+near(api.camera.fov, 43); near(api.controls.target.x, 32); near(api.controls.target.y, 0); near(api.controls.target.z, 31);
 assert.equal(doc.querySelector('.view[data-view="aerial"]').classList.contains('active'), true,
     'Aerial view should be selected on initial page load');
 const aerialPreset = win.TDK_LAYOUT.CAMERA_PRESETS.aerial;
-assert.deepEqual(Array.from(aerialPreset.position), [-158, 168, 198]);
-assert.deepEqual(Array.from(aerialPreset.target), [8, 5, -8]);
-assert.equal(aerialPreset.fov, 46, 'Aerial view should balance the full edited campus around one visual centre');
+assert.deepEqual(Array.from(aerialPreset.position), [151, 142, 169]);
+assert.deepEqual(Array.from(aerialPreset.target), [32, 0, 31]);
+assert.equal(aerialPreset.fov, 43, 'Aerial view should balance the full edited campus around one visual centre');
 assert.equal(api.buildingNightLights.length, win.TDK_LAYOUT.BUILDINGS.length * 2,
     'Every building should have two night lights');
 assert.equal(api.scene.getObjectByName('Factory streetlights').children.filter(object => object.isLight).length,
@@ -391,6 +424,30 @@ click(env, 'editor-delete'); assert.equal(api.objects.has(copy.userData.editor.i
 click(env, 'editor-undo'); assert.equal(api.objects.has(copy.userData.editor.id), true);
 click(env, 'editor-redo'); assert.equal(api.objects.has(copy.userData.editor.id), false);
 
+for (const type of ['roadSegment', 'roadSign', 'spiritHouse', 'parkedCar']) {
+    change(env, 'editor-add-type', type);
+    click(env, 'editor-add');
+    const procedural = api.selected[0];
+    assert.equal(procedural.userData.editor.type, type);
+    assert.ok(procedural.userData.editorBounds.getSize(new RealThree.Vector3()).length() > .5,
+        `${type} should create visible geometry`);
+    click(env, 'editor-delete');
+}
+change(env, 'editor-add-type', 'blueCrate');
+
+click(env, 'editor-add-preset');
+await Promise.resolve();
+const externalModel = api.selected[0];
+assert.equal(externalModel.userData.editor.type, 'externalModel');
+assert.match(externalModel.userData.editor.asset.url, /^https:\/\/cdn\.jsdelivr\.net\//);
+assert.equal(externalModel.userData.externalPlaceholder, undefined,
+    'Loaded CDN models should replace the loading placeholder');
+const stateWithExternalModel = api.saveEditorLayout();
+const externalEntry = stateWithExternalModel.added.find(entry => entry.id === externalModel.userData.editor.id);
+assert.equal(externalEntry.asset.url, externalModel.userData.editor.asset.url,
+    'External asset metadata must persist in the additive layout record');
+click(env, 'editor-delete');
+
 api.selectEditable(crate);
 const worldBefore = crate.getWorldPosition(new RealThree.Vector3());
 const office = api.objects.get('building-main_office');
@@ -462,6 +519,103 @@ assert.equal(doc.getElementById('editor-fullscreen').getAttribute('aria-pressed'
 click(env, 'editor-fullscreen'); await Promise.resolve();
 assert.equal(doc.getElementById('editor-fullscreen').getAttribute('aria-pressed'), 'false');
 
+// Presentation show is additive UI only: it tours the camera, updates live time,
+// enters fullscreen, and leaves the locked object layout untouched.
+const layoutBeforePresentation = win.localStorage.getItem('tdk-v7-object-layout-v1');
+assert.equal(doc.getElementById('presentation-show').parentElement.id, 'viewport');
+assert.equal(doc.getElementById('presentation-exit'), null, 'Presentation must not show an exit button');
+assert.equal(doc.getElementById('presentation-language'), null, 'Greeting must not include a language badge');
+assert.equal(doc.getElementById('presentation-voice'), null, 'Presentation must not show a welcome voice button');
+assert.equal(doc.querySelector('.presentation-hint'), null, 'Presentation must not show the camera tour hint');
+assert.ok(doc.getElementById('presentation-focus-card'), 'Executive focus card must exist');
+assert.ok(doc.getElementById('presentation-previous') && doc.getElementById('presentation-pause') &&
+    doc.getElementById('presentation-next'), 'Compact tour controls must exist');
+assert.match(doc.getElementById('presentation-layout-image').src, /\/references\/[^/]+\.png$/);
+click(env, 'presentation-start'); await Promise.resolve();
+assert.equal(win.TDK_FACTORY_MAP.presentationActive, true);
+assert.equal(doc.getElementById('presentation-show').hidden, false);
+assert.equal(doc.body.classList.contains('presentation-show-active'), true);
+assert.equal(doc.getElementById('presentation-weather').textContent, '☀ กลางวัน');
+assert.equal(doc.getElementById('presentation-greeting').textContent, 'ยินดีต้อนรับสู่ TDK Industrial');
+api.renderer.frame();
+assert.notEqual(doc.getElementById('presentation-time').textContent, '--:--:--');
+assert.ok(doc.getElementById('presentation-date').textContent.length > 5);
+api.updatePresentationShow(api.presentationStartedAt + 4500);
+assert.equal(doc.getElementById('presentation-show').classList.contains('layout-visible'), false);
+api.updatePresentationShow(api.presentationStartedAt + 8000);
+assert.equal(doc.getElementById('presentation-show').classList.contains('layout-visible'), true,
+    'Factory layout must appear immediately after the first welcome');
+api.updatePresentationShow(api.presentationStartedAt + 16000);
+assert.equal(doc.getElementById('presentation-show').classList.contains('layout-visible'), false,
+    'Opening layout insert must clear before the next greeting');
+api.updatePresentationShow(api.presentationStartedAt + 18000);
+assert.equal(doc.getElementById('presentation-greeting').textContent, 'Welcome to TDK Industrial');
+api.updatePresentationShow(api.presentationStartedAt + 28000);
+assert.equal(doc.getElementById('presentation-weather').textContent, '🌙 กลางคืน');
+assert.equal(doc.getElementById('presentation-show').classList.contains('layout-visible'), true,
+    'Factory layout must cover the day-to-night transition');
+api.updatePresentationShow(api.presentationStartedAt + 36000);
+assert.equal(doc.getElementById('presentation-greeting').textContent,
+    'TDK 인더스트리얼에 오신 것을 환영합니다');
+assert.equal(doc.getElementById('presentation-show').classList.contains('layout-visible'), false);
+api.updatePresentationShow(api.presentationStartedAt + 55000);
+assert.equal(doc.getElementById('presentation-weather').textContent, '🌧 ฝนตก');
+assert.equal(doc.getElementById('presentation-show').classList.contains('layout-visible'), true,
+    'Factory layout must recur for the night-to-rain transition');
+assert.equal(doc.getElementById('presentation-welcome').classList.contains('is-visible'), false,
+    'Greeting must not cover a periodic layout insert');
+api.updatePresentationShow(api.presentationStartedAt + 82000);
+assert.equal(doc.getElementById('presentation-weather').textContent, '🌫 หมอก');
+assert.equal(doc.getElementById('presentation-show').classList.contains('layout-visible'), true,
+    'Factory layout must recur for the rain-to-fog transition');
+api.updatePresentationShow(api.presentationStartedAt + 154000);
+assert.equal(doc.getElementById('presentation-show').classList.contains('layout-visible'), true,
+    'Factory layout must bridge Version 1 and the building presentation');
+assert.equal(doc.getElementById('presentation-focus-card').hidden, true);
+api.updatePresentationShow(api.presentationStartedAt + 162000);
+assert.equal(doc.getElementById('presentation-focus-card').hidden, false);
+assert.equal(doc.getElementById('presentation-focus-title').textContent, 'Main Office');
+assert.equal(doc.querySelectorAll('#presentation-focus-zones span').length, 5);
+assert.match(doc.getElementById('presentation-weather').textContent, /EXECUTIVE TOUR/);
+assert.equal(doc.getElementById('presentation-focus-card').dataset.placement, 'bottom-left');
+api.updatePresentationShow(api.presentationStartedAt + 175000);
+assert.equal(doc.getElementById('presentation-focus-title').textContent, 'DIE-SET');
+assert.equal(doc.querySelectorAll('#presentation-focus-zones span').length, 6);
+api.updatePresentationShow(api.presentationStartedAt + 227000);
+assert.equal(doc.getElementById('presentation-focus-title').textContent, 'โดมเก็บแร็ค');
+api.updatePresentationShow(api.presentationStartedAt + 239000);
+assert.equal(doc.getElementById('presentation-show').classList.contains('layout-visible'), false,
+    'Closing chapter must stay on the 3D scene without a layout insert');
+for (const [index, stop] of api.presentationTourStops.entries()) {
+    const group = api.presentationBuildingGroups.get(stop.buildingId);
+    const front = new RealThree.Vector3(0, 0, 1)
+        .applyQuaternion(group.getWorldQuaternion(new RealThree.Quaternion())).setY(0).normalize();
+    const cameraDirection = api.presentationStopPoses[index].position.clone()
+        .sub(api.presentationStopPoses[index].target).setY(0).normalize();
+    assert.ok(cameraDirection.dot(front) > .9, `${stop.buildingId} camera must face the front facade`);
+}
+for (const buildingId of ['doke1_west', 'doke1_store', 'doke2_assy']) {
+    const index = api.presentationTourStops.findIndex(stop => stop.buildingId === buildingId);
+    const pose = api.presentationStopPoses[index];
+    const horizontalDistance = Math.hypot(
+        pose.position.x - pose.target.x,
+        pose.position.z - pose.target.z
+    );
+    assert.ok(pose.position.y - pose.target.y > horizontalDistance * .65,
+        `${buildingId} must use the requested high-angle presentation camera`);
+}
+click(env, 'presentation-pause');
+assert.equal(doc.getElementById('presentation-pause').getAttribute('aria-pressed'), 'true');
+click(env, 'presentation-pause');
+assert.equal(doc.getElementById('presentation-pause').getAttribute('aria-pressed'), 'false');
+assert.equal(api.objects.get('building-main_office').visible, true,
+    'Presentation tour must leave Main Office exterior in the normal scene');
+assert.equal(win.localStorage.getItem('tdk-v7-object-layout-v1'), layoutBeforePresentation);
+await win.TDK_FACTORY_MAP.stopPresentation(); await Promise.resolve();
+assert.equal(win.TDK_FACTORY_MAP.presentationActive, false);
+assert.equal(doc.getElementById('presentation-show').hidden, true);
+assert.equal(api.objects.get('building-main_office').visible, true);
+
 api.saveEditorLayout();
 const saved = win.localStorage.getItem('tdk-v7-object-layout-v1');
 const reloaded = boot(saved);
@@ -495,8 +649,13 @@ near(customCamera.api.camera.fov, 45);
 const migratedCamera = boot(undefined, JSON.stringify({
     position: [-78, 150, 210], target: [37, 2, 10], fov: 40
 }), 'photo');
-near(migratedCamera.api.camera.position.x, 8);
-near(migratedCamera.api.camera.fov, 46);
+near(migratedCamera.api.camera.position.x, 117);
+near(migratedCamera.api.camera.fov, 42);
+const migratedCurrentCamera = boot(undefined, JSON.stringify({
+    position: [8, 120, 170], target: [25, 2, 10], fov: 46
+}), 'photo');
+near(migratedCurrentCamera.api.camera.position.x, 117);
+near(migratedCurrentCamera.api.camera.fov, 42);
 const migratedLayout = boot(JSON.stringify({
     revision: 10,
     objects: {
@@ -604,6 +763,6 @@ click(env, 'editor-done');
 assert.equal(api.mode, false);
 assert.equal(doc.getElementById('editor-topbar').hidden, true);
 assert.deepEqual(errors, []);
-console.log(`PASS: editor transforms, undo/redo, add/delete, clone buildings, multi-selection, persistence, view modes, fullscreen events; ${api.objects.size} editable objects; no overlapping building footprints.`);
+console.log(`PASS: editor transforms, undo/redo, add/delete, clone buildings, multi-selection, persistence, view modes, presentation show, fullscreen events; ${api.objects.size} editable objects; no overlapping building footprints.`);
 domCleanup();
-function domCleanup() { for (const test of [env, reloaded, withoutSource, customCamera, migratedCamera, migratedLayout, migrated, baselineRoundTrip, blockedExport, viewer, editorEntry]) test.dom.window.close(); }
+function domCleanup() { for (const test of [env, reloaded, withoutSource, customCamera, migratedCamera, migratedCurrentCamera, migratedLayout, migrated, baselineRoundTrip, blockedExport, viewer, editorEntry]) test.dom.window.close(); }

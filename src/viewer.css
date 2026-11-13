@@ -50,6 +50,373 @@
             background: radial-gradient(ellipse at center, transparent 58%, rgba(5, 15, 25, .2) 100%);
         }
 
+        .presentation-show[hidden] {
+            display: none;
+        }
+
+        .presentation-show {
+            position: fixed;
+            inset: 0;
+            z-index: 8;
+            display: block;
+            overflow: hidden;
+            pointer-events: none;
+            color: #fff;
+            font-family: "Segoe UI", "Leelawadee UI", "Malgun Gothic", Tahoma, sans-serif;
+        }
+
+        .presentation-show::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(180deg, rgba(4, 14, 27, .72), transparent 28%, transparent 62%, rgba(4, 14, 27, .82)),
+                radial-gradient(ellipse at center, transparent 48%, rgba(2, 10, 20, .34) 100%);
+        }
+
+        .presentation-brand {
+            position: absolute;
+            z-index: 3;
+            top: clamp(22px, 4vw, 54px);
+            left: clamp(22px, 5vw, 74px);
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            font-size: clamp(12px, 1.15vw, 17px);
+            font-weight: 750;
+            letter-spacing: .24em;
+            text-shadow: 0 3px 18px rgba(0, 0, 0, .45);
+            transition: opacity .8s ease, transform .8s ease;
+        }
+
+        .presentation-brand-mark {
+            display: grid;
+            min-width: 72px;
+            min-height: 38px;
+            place-items: center;
+            border-radius: 7px;
+            background: #1469b8;
+            font-size: 23px;
+            font-weight: 900;
+            letter-spacing: .03em;
+            box-shadow: 0 8px 30px rgba(8, 78, 149, .38);
+        }
+
+        .presentation-weather {
+            position: absolute;
+            z-index: 3;
+            top: clamp(70px, 9vw, 112px);
+            left: clamp(22px, 5vw, 74px);
+            padding: 7px 13px;
+            border: 1px solid rgba(255, 255, 255, .24);
+            border-radius: 999px;
+            background: rgba(4, 20, 37, .5);
+            color: #d9f2ff;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: .06em;
+            text-shadow: 0 2px 12px rgba(0, 0, 0, .6);
+            backdrop-filter: blur(12px);
+            transition: background .8s ease, color .8s ease, opacity .8s ease, transform .8s ease;
+        }
+
+        .presentation-show.layout-visible .presentation-brand,
+        .presentation-show.layout-visible .presentation-weather,
+        .presentation-show.layout-visible .presentation-clock {
+            pointer-events: none;
+            opacity: 0;
+            transform: translateY(-14px);
+        }
+
+        .presentation-layout {
+            position: absolute;
+            inset: 0;
+            z-index: 2;
+            display: grid;
+            place-items: center;
+            padding: 0;
+            background:
+                linear-gradient(180deg, rgba(4, 16, 28, .22), transparent 22%, transparent 76%, rgba(4, 16, 28, .36)),
+                rgba(226, 239, 246, .94);
+            opacity: 0;
+            transform: scale(1.035);
+            transition: opacity 1.8s ease, transform 10s cubic-bezier(.16, .8, .22, 1);
+        }
+
+        .presentation-layout.is-visible {
+            opacity: 1;
+            transform: scale(1);
+        }
+
+        .presentation-layout img {
+            display: block;
+            width: min(100vw, 2048px);
+            height: 100%;
+            max-height: 100dvh;
+            object-fit: contain;
+            filter: saturate(.96) contrast(1.025) brightness(1.01);
+            -webkit-mask-image: radial-gradient(ellipse 94% 88% at center, #000 68%, transparent 100%);
+            mask-image: radial-gradient(ellipse 94% 88% at center, #000 68%, transparent 100%);
+        }
+
+        .presentation-welcome {
+            position: absolute;
+            z-index: 3;
+            top: 50%;
+            left: 50%;
+            width: min(920px, calc(100% - 40px));
+            text-align: center;
+            opacity: 0;
+            transform: translate(-50%, -42%);
+            transition: opacity .9s ease, transform 1.1s cubic-bezier(.2, .7, .2, 1);
+            text-shadow: 0 5px 30px rgba(0, 0, 0, .7);
+        }
+
+        .presentation-welcome.is-visible {
+            opacity: 1;
+            transform: translate(-50%, -50%);
+        }
+
+        .presentation-welcome strong {
+            display: block;
+            font-size: clamp(30px, 5vw, 76px);
+            font-weight: 800;
+            line-height: 1.12;
+            letter-spacing: -.025em;
+        }
+
+        .presentation-subtitle {
+            display: block;
+            margin-top: 15px;
+            color: #d7edfa;
+            font-size: clamp(14px, 1.6vw, 23px);
+            font-weight: 450;
+            letter-spacing: .03em;
+        }
+
+        .presentation-focus-card[hidden] {
+            display: none;
+        }
+
+        .presentation-focus-card {
+            position: absolute;
+            z-index: 4;
+            bottom: clamp(52px, 7vh, 88px);
+            left: clamp(22px, 5vw, 74px);
+            width: min(500px, calc(100vw - 44px));
+            padding: 20px 22px 21px;
+            border: 1px solid rgba(151, 213, 255, .28);
+            border-left: 4px solid #4bb8f2;
+            border-radius: 3px 18px 18px 3px;
+            background: linear-gradient(120deg, rgba(4, 20, 37, .92), rgba(10, 40, 66, .78));
+            box-shadow: 0 18px 60px rgba(0, 0, 0, .3);
+            opacity: 0;
+            transform: translateY(18px);
+            backdrop-filter: blur(18px);
+            transition: opacity .7s ease, transform .8s cubic-bezier(.2, .75, .2, 1);
+        }
+
+        .presentation-focus-card.is-visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .presentation-focus-head {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #7ed3ff;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .14em;
+        }
+
+        .presentation-focus-head span:first-child {
+            padding: 4px 7px;
+            border-radius: 5px;
+            color: #fff;
+            background: #176ab0;
+            letter-spacing: .08em;
+        }
+
+        .presentation-focus-card h2 {
+            margin: 10px 0 7px;
+            color: #fff;
+            font-size: clamp(25px, 2.5vw, 38px);
+            line-height: 1.08;
+            letter-spacing: -.025em;
+        }
+
+        .presentation-focus-card > p {
+            margin: 0;
+            color: #cfe5f2;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .presentation-focus-value {
+            display: grid;
+            gap: 4px;
+            margin-top: 13px;
+            padding: 10px 12px;
+            border-radius: 9px;
+            background: rgba(74, 168, 224, .12);
+        }
+
+        .presentation-focus-value span,
+        .presentation-focus-areas > span {
+            color: #73c9f5;
+            font-size: 8px;
+            font-weight: 800;
+            letter-spacing: .15em;
+        }
+
+        .presentation-focus-value strong {
+            color: #eef9ff;
+            font-size: 11px;
+            font-weight: 600;
+            line-height: 1.5;
+        }
+
+        .presentation-focus-areas {
+            margin-top: 11px;
+        }
+
+        #presentation-focus-zones {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-top: 6px;
+        }
+
+        #presentation-focus-zones span {
+            padding: 4px 7px;
+            border: 1px solid rgba(151, 213, 255, .2);
+            border-radius: 999px;
+            color: #dceef8;
+            background: rgba(255, 255, 255, .06);
+            font-size: 8px;
+            white-space: nowrap;
+        }
+
+        .presentation-tour-controls {
+            position: absolute;
+            z-index: 5;
+            bottom: 20px;
+            left: 50%;
+            display: flex;
+            gap: 5px;
+            padding: 5px;
+            border: 1px solid rgba(255, 255, 255, .16);
+            border-radius: 999px;
+            background: rgba(4, 20, 37, .5);
+            opacity: .62;
+            pointer-events: auto;
+            transform: translateX(-50%);
+            backdrop-filter: blur(12px);
+            transition: opacity .2s ease;
+        }
+
+        .presentation-tour-controls:hover,
+        .presentation-tour-controls:focus-within {
+            opacity: 1;
+        }
+
+        .presentation-tour-controls button {
+            display: grid;
+            width: 32px;
+            height: 32px;
+            min-width: 32px;
+            margin: 0;
+            padding: 0;
+            place-items: center;
+            border: 0;
+            border-radius: 50%;
+            color: #fff;
+            background: transparent;
+            font: 700 17px/1 Arial, sans-serif;
+        }
+
+        .presentation-tour-controls button:hover,
+        .presentation-tour-controls button:focus-visible {
+            background: rgba(74, 168, 224, .28);
+            transform: none;
+        }
+
+        .presentation-clock {
+            position: absolute;
+            z-index: 3;
+            right: clamp(22px, 5vw, 74px);
+            bottom: clamp(30px, 6vw, 76px);
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            text-align: right;
+            text-shadow: 0 4px 22px rgba(0, 0, 0, .64);
+            transition: opacity .8s ease, transform .8s ease;
+        }
+
+        .presentation-clock time {
+            font-variant-numeric: tabular-nums;
+            font-size: clamp(38px, 5.2vw, 74px);
+            font-weight: 300;
+            line-height: 1;
+            letter-spacing: .035em;
+        }
+
+        .presentation-clock span {
+            margin-top: 10px;
+            font-size: clamp(13px, 1.35vw, 19px);
+            font-weight: 550;
+        }
+
+        .presentation-clock small {
+            margin-top: 6px;
+            color: #9fd9f7;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: .14em;
+            text-transform: uppercase;
+        }
+
+        .presentation-progress {
+            position: absolute;
+            z-index: 4;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            height: 4px;
+            background: rgba(255, 255, 255, .12);
+        }
+
+        .presentation-progress span {
+            display: block;
+            width: 0;
+            height: 100%;
+            background: linear-gradient(90deg, #1686d9, #65d6ff);
+            box-shadow: 0 0 16px rgba(64, 190, 255, .8);
+        }
+
+        @media (max-width: 720px) {
+            .presentation-brand { gap: 9px; letter-spacing: .12em; }
+            .presentation-brand-mark { min-width: 58px; min-height: 32px; font-size: 19px; }
+            .presentation-weather { top: 62px; left: 18px; }
+            .presentation-clock { right: 18px; bottom: 76px; }
+            .presentation-layout img { width: 118vw; max-width: none; }
+            .presentation-focus-card {
+                right: 16px;
+                bottom: 58px;
+                left: 16px;
+                width: auto;
+                padding: 15px 16px;
+            }
+            .presentation-focus-card h2 { font-size: 24px; }
+            .presentation-focus-card > p { font-size: 11px; }
+            .presentation-focus-value { display: none; }
+            #presentation-focus-zones span:nth-child(n+5) { display: none; }
+            .presentation-clock { display: none; }
+        }
+
         .editor-marquee {
             position: fixed;
             display: none;
