@@ -13,7 +13,9 @@ assert.equal(selectStartupLayout({ canonicalBaseline: 'older-baseline', revision
 const currentEdit = structuredClone(canonical);
 currentEdit.canonicalBaseline = CANONICAL_LAYOUT_ID;
 currentEdit.objects['custom-blueCrate-loader-test'] = {};
-assert.equal(selectStartupLayout(currentEdit, canonical), currentEdit,
-    'Edits saved against the current canonical snapshot must survive reloads');
+assert.equal(selectStartupLayout(currentEdit, canonical), canonical,
+    'Viewer mode must ignore local edits so every origin renders the same map');
+assert.equal(selectStartupLayout(currentEdit, canonical, { allowSavedLayout: true }), currentEdit,
+    'Local editor mode may restore edits saved against the current canonical snapshot');
 
 console.log('PASS: canonical startup layout selection across local and deployed origins');

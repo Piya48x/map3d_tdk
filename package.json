@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "test": "npm --prefix qa test",
     "build:standalone": "npm --prefix qa run build:standalone",
-    "verify": "npm run test && npm run build"
+    "verify": "npm run test && npm run build",
+    "verify:deployment": "node qa/verify-deployment.mjs"
   },
   "dependencies": {
     "three": "0.169.0"

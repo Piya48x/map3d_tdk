@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom';
 import * as RealThree from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { SVGLoader } from 'three/addons/loaders/SVGLoader.js';
 import { auditLayoutAgainstBaseline as auditExportLayout } from '../src/threejs-export.js';
 import { positionOnActivityLoop } from '../src/activity-navigation.js';
 
@@ -47,6 +48,8 @@ function boot(saved, savedCamera, view = '', viewerOnly = false, openEditor = fa
     win.structuredClone = structuredClone;
     win.OrbitControls = OrbitControls;
     win.TransformControls = TransformControls;
+    win.SVGLoader = SVGLoader;
+    globalThis.DOMParser = win.DOMParser;
     win.GLTFLoader = class {
         load(_url, onLoad) {
             const scene = new RealThree.Group();
@@ -136,6 +139,11 @@ assert.ok(entranceMonument.getObjectByName('Entrance monument panel')?.isMesh &&
     entranceMonument.getObjectByName('Entrance monument TDK 3D logo')?.isGroup &&
     entranceMonument.getObjectByName('Entrance monument planting bed')?.isMesh,
     'Entrance monument should include the tall panel, raised 3D TDK branding, and landscaped island');
+const officialWordmark = entranceMonument.getObjectByName('Entrance monument official TDK wordmark');
+assert.ok(officialWordmark?.isMesh,
+    'Entrance monument should carry the official TDK wordmark extruded from its SVG outline');
+assert.ok(officialWordmark.geometry.attributes.position.count > 100,
+    'Official TDK wordmark should keep the full letterforms rather than a placeholder outline');
 assert.ok(entranceAvenue.getObjectByName('Entrance avenue red curbs')?.isInstancedMesh &&
     entranceAvenue.getObjectByName('Entrance avenue hedges')?.isInstancedMesh &&
     entranceAvenue.getObjectByName('Entrance avenue tree crowns')?.isInstancedMesh,
@@ -278,17 +286,26 @@ const storeSign = storeBuilding.getObjectByName('TDK company sign');
 assert.ok(storeSign, 'Store should display a TDK company sign');
 assert.ok(storeSign.geometry.parameters.width / storeSign.geometry.parameters.height > 5,
     'Store company sign should retain a wide, readable signboard shape');
-const storeEave = buildings.doke1_store.size.height * 1.54 + .45;
-const storeRoofRise = buildings.doke1_store.roof.rise * 1.54;
-const storeRoofWidth = buildings.doke1_store.size.width * 1.54 + 1.8;
-const storeRoofAtSignEdge = storeEave + storeRoofRise *
-    (1 - (storeSign.geometry.parameters.width / storeRoofWidth) ** 2);
-assert.ok(storeSign.position.y - storeSign.geometry.parameters.height / 2 > storeEave,
-    'Store sign should sit above the eave on the blue gable');
-assert.ok(storeSign.position.y + storeSign.geometry.parameters.height / 2 < storeRoofAtSignEdge,
-    'Store sign should fit under the curved roof at both ends');
-assert.ok(storeSign.position.z > buildings.doke1_store.size.depth * 1.54 / 2 + .8,
-    'Store sign should be visible in front of the gable');
+assert.ok(Math.abs(storeSign.rotation.y - Math.PI / 2) < 1e-6,
+    'Store sign should be mounted flat on the long wall, not on the curved end gable');
+const storeRenderWidth = buildings.doke1_store.size.width * 1.54;
+const storeRenderDepth = buildings.doke1_store.size.depth * 1.54;
+const storeRenderHeight = buildings.doke1_store.size.height * 1.54;
+assert.ok(storeSign.position.x > storeRenderWidth / 2 + .2,
+    'Store sign should hang on the outward face of the long east wall');
+assert.ok(Math.abs(storeSign.position.z) + storeSign.geometry.parameters.width / 2 < storeRenderDepth / 2,
+    'Store sign should stay within the length of that wall');
+const storeBlueBottom = .3 + storeRenderHeight * (1 - buildings.doke1_store.facade.blueRatio);
+const storeBlueTop = .3 + storeRenderHeight;
+assert.ok(storeSign.position.y - storeSign.geometry.parameters.height / 2 >= storeBlueBottom,
+    'Store sign should sit fully inside the blue cladding band');
+assert.ok(storeSign.position.y + storeSign.geometry.parameters.height / 2 <= storeBlueTop,
+    'Store sign should stay below the eave line of the long wall');
+const storeFacadeDetails = storeBuilding.getObjectByName('Store photo facade details');
+assert.ok(storeFacadeDetails?.isGroup, 'Store should carry the photo-referenced facade detail group');
+const storeWallRibs = storeFacadeDetails.getObjectByName('Store side corrugated wall ribs');
+assert.ok(storeWallRibs?.isInstancedMesh && storeWallRibs.count > 100,
+    'Store long walls should keep the corrugated rib cladding from the reference photo');
 let doke2DarkFacadeDetails = 0;
 doke2.traverse(object => {
     if (object.isMesh && object.material === api.materials.dark) doke2DarkFacadeDetails += 1;

@@ -2,6 +2,7 @@ import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
         import { TransformControls } from 'three/addons/controls/TransformControls.js';
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { SVGLoader } from 'three/addons/loaders/SVGLoader.js';
         import { SITE, GAME_CONFIG } from './app-config.js';
         import { TOP_VIEW_GRID, BUILDINGS, BUILDING_BY_ID, CAMERA_PRESETS, ROADS, WALKWAYS, PARKING_AREAS, FENCES, FRONT_WALLS, VEGETATION, layoutWarnings } from './factory-data.js';
         import { GAME_MOVEMENT_CODES, getMovementInput, movementDelta, clamp } from './game-controls.js';
@@ -1532,9 +1533,12 @@ import * as THREE from 'three';
 
                 if (facade.sign) {
                     if (id === 'doke1_store') {
-                        // Mount the photographed sign high on the blue curved gable,
-                        // with its top still below the roof arc at both ends.
-                        tdkSign(group, 0, h + .45 + rise * .43, d / 2 + .9, 19.5, 3.55);
+                        // The photographed Store sign is mounted on the long blue wall,
+                        // not centred on the curved end gable, so keep it centred in the
+                        // blue cladding band instead of resting on the gable eave.
+                        const storeSignBand = h * (facade.blueRatio || .42);
+                        tdkSign(group, w / 2 + .34, h - storeSignBand / 2 + .3, d * .18,
+                            Math.min(25, d * .3), 3.7, Math.PI / 2);
                     } else if (id === 'doke2_assy') {
                         const doke2FacadeSign = sign(group, 'DK  T.D.K. INDUSTRIAL CO., LTD.',
                             0, h + .45 + rise * .45, d / 2 + .9, Math.min(30, w * .78), 2.35,
@@ -1586,6 +1590,86 @@ import * as THREE from 'three';
             for (let zz = -storeD * .34; zz <= storeD * .34; zz += 8.2) {
                 cyl(storeGroup, .11, .11, 5.35, storeW / 2 + 5.35, 2.68, zz + 1.2, M.frame, 8);
             }
+
+            function addStorePhotoFacade() {
+                const details = new THREE.Group();
+                details.name = 'Store photo facade details';
+                storeGroup.add(details);
+
+                const storeH = toRender(storeData.size.height);
+                const blueHeight = storeH * storeData.facade.blueRatio;
+                const blueCenterY = storeH - blueHeight / 2 + .3;
+                const frontZ = storeD / 2 + .13;
+                const sideX = storeW / 2 + .13;
+
+                // The pale front and side bases already come from the wall material, and the
+                // front glazing strip is built by the facade profile above, so this group only
+                // adds the cladding details the reference photo shows on the long sides.
+                for (const side of [-1, 1]) {
+                    for (let zz = -storeD / 2 + 4; zz < storeD / 2 - 3; zz += 7.2) {
+                        if (side > 0 && Math.abs(zz - storeD * .03) < 5.4) continue;
+                        const window = box(details, .12, .92, 5.4, side * (sideX + .12),
+                            2.35, zz, M.officeGlassDark, false);
+                        window.name = 'Store side horizontal window';
+                        for (const mullion of [-1.7, 0, 1.7]) {
+                            box(details, .08, .92, .07, side * (sideX + .2),
+                                2.35, zz + mullion, M.frame, false);
+                        }
+                    }
+                }
+
+                // Fine standing ribs make the blue metal cladding read at both aerial
+                // and ground-level distances without replacing the existing wall shell.
+                const frontRibCount = Math.floor((storeW - 1) / .72) + 1;
+                const sideRibCount = Math.floor((storeD - 1) / .82) + 1;
+                const ribGeometry = new THREE.BoxGeometry(.045, blueHeight - .22, .065);
+                const frontRibs = new THREE.InstancedMesh(ribGeometry, M.roofRib, frontRibCount);
+                frontRibs.name = 'Store front corrugated wall ribs';
+                const ribMatrix = new THREE.Matrix4();
+                for (let index = 0; index < frontRibCount; index++) {
+                    const xx = -storeW / 2 + .5 + index * (storeW - 1) / Math.max(1, frontRibCount - 1);
+                    ribMatrix.makeTranslation(xx, blueCenterY, frontZ + .12);
+                    frontRibs.setMatrixAt(index, ribMatrix);
+                }
+                frontRibs.castShadow = true;
+                details.add(frontRibs);
+
+                const sideRibs = new THREE.InstancedMesh(ribGeometry, M.roofRib, sideRibCount * 2);
+                sideRibs.name = 'Store side corrugated wall ribs';
+                for (let sideIndex = 0; sideIndex < 2; sideIndex++) {
+                    const side = sideIndex ? 1 : -1;
+                    for (let index = 0; index < sideRibCount; index++) {
+                        const zz = -storeD / 2 + .5 + index * (storeD - 1) / Math.max(1, sideRibCount - 1);
+                        ribMatrix.makeRotationY(Math.PI / 2);
+                        ribMatrix.setPosition(side * (sideX + .12), blueCenterY, zz);
+                        sideRibs.setMatrixAt(sideIndex * sideRibCount + index, ribMatrix);
+                    }
+                }
+                sideRibs.castShadow = true;
+                details.add(sideRibs);
+
+                // Large dark information display and planted edge visible below the sign wall.
+                const display = box(details, .24, 3.1, 5.2, sideX + .24, 3.35,
+                    storeD * .03, M.dark);
+                display.name = 'Store exterior information display';
+                box(details, .32, 1.25, .32, sideX + .16, .68,
+                    storeD * .03, M.frame);
+
+                // Blue canopy fascia and white steel frame match the loading entrance.
+                const canopyFascia = box(details, .38, .78, storeD * .76,
+                    storeW / 2 + 5.88, 5.28, 1.2, M.blue);
+                canopyFascia.name = 'Store loading canopy blue fascia';
+                for (let zz = -storeD * .34; zz <= storeD * .34; zz += 8.2) {
+                    box(details, 5.6, .12, .12, storeW / 2 + 3.0, 5.18,
+                        zz + 1.2, M.officeWhite, false);
+                    beam(details,
+                        [storeW / 2 + .25, 5.12, zz + 1.2],
+                        [storeW / 2 + 5.72, 4.55, zz + 1.2],
+                        .055, M.officeWhite);
+                }
+                return details;
+            }
+            addStorePhotoFacade();
 
             // Covered connector between Doke 2 and the rear flat-roof zone of the rack dome.
             const doke2Data = BUILDING_BY_ID.doke2_assy;
@@ -2265,64 +2349,33 @@ import * as THREE from 'three';
 
                 const logoBlue = material('#0872d7', .24, .48);
                 const logoEdge = material('#173e68', .32, .58);
-                const polygonShape = (points, holes = []) => {
-                    const shape = new THREE.Shape();
-                    shape.moveTo(points[0][0], points[0][1]);
-                    points.slice(1).forEach(([x, y]) => shape.lineTo(x, y));
-                    shape.closePath();
-                    holes.forEach(holePoints => {
-                        const hole = new THREE.Path();
-                        hole.moveTo(holePoints[0][0], holePoints[0][1]);
-                        holePoints.slice(1).forEach(([x, y]) => hole.lineTo(x, y));
-                        hole.closePath();
-                        shape.holes.push(hole);
-                    });
-                    return shape;
-                };
-                const addExtrudedLogoShape = (parent, name, points, holes = []) => {
-                    const geometry = new THREE.ExtrudeGeometry(polygonShape(points, holes), {
-                        depth: .28,
-                        bevelEnabled: true,
-                        bevelSegments: 2,
-                        bevelSize: .035,
-                        bevelThickness: .035,
-                        curveSegments: 2
-                    });
-                    const mesh = new THREE.Mesh(geometry, [logoBlue, logoEdge]);
-                    mesh.name = name;
-                    mesh.castShadow = true;
-                    mesh.receiveShadow = true;
-                    parent.add(mesh);
-                };
+                const tdkWordmarkPath = `M 77.999995,103.92055 L 77.999995,35.9725 L 0,35.9725 L 0,0.99924 L 202.99999,0.99924 L 202.99999,35.94931 L 124.49999,36.47212 L 123.98601,171.8686 L 77.999995,171.8686 Z M 212.99999,86.49961 L 212.99999,0.99924 L 274.36901,0.99924 C 342.0218,0.99924 346.45332,1.31078 360.87398,7.08069 C 371.59097,11.36869 379.30115,16.32942 387.82783,24.42273 C 404.89707,40.62445 413.51825,58.82269 414.70961,81.1668 C 415.74723,100.62739 411.26358,117.40505 400.87998,132.9169 C 388.66328,151.167 371.34948,163.4035 349.72589,169.0696 C 341.79635,171.1475 339.18529,171.2391 277.25,171.6126 L 212.99999,172 Z M 343.31968,131.6655 C 369.53731,119.15651 379.96832,89.85783 367.37709,64.093 C 360.54757,50.1181 346.47105,39.55799 331.31977,37.04305 C 326.92223,36.31312 312.60155,36.01069 291,36.19158 L 257.5,36.47212 L 256.98128,135.9831 L 296.24064,135.6899 L 335.5,135.3965 Z M 425,85.9343 L 425,0 L 472.97781,0 L 473.5,81.81492 L 562.17552,0.99924 L 623.5,1.08045 C 578.30904,40.41639 531.00453,82.42071 531.21911,82.96732 C 531.37361,83.36083 627,171.2069 627,171.4417 C 627,171.6765 612.71249,171.8597 563.5,171.8289 L 473.5,83.60807 L 472.9792,171.8686 L 425,171.8686 Z`;
+                const tdkSvg = new SVGLoader().parse(
+                    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 627 172"><path d="${tdkWordmarkPath}"/></svg>`
+                );
+                const tdkShapes = tdkSvg.paths.flatMap(path => SVGLoader.createShapes(path));
                 const add3DLogo = side => {
                     const logo = new THREE.Group();
                     logo.name = 'Entrance monument TDK 3D logo';
                     logo.position.set(0, 12.65, side * .4);
                     if (side < 0) logo.rotation.y = Math.PI;
                     group.add(logo);
-
-                    // Custom italic TDK silhouette. Closed faces keep the D counter
-                    // and K arms crisp while the extrusion provides real side depth.
-                    addExtrudedLogoShape(logo, 'Entrance monument logo T', [
-                        [-2.25, .72], [-.76, .72], [-.86, .36], [-1.34, .36],
-                        [-1.68, -.78], [-2.12, -.78], [-1.78, .36], [-2.35, .36]
-                    ]);
-                    addExtrudedLogoShape(logo, 'Entrance monument logo D', [
-                        [-.49, .72], [.27, .72], [.66, .58], [.82, .3],
-                        [.6, -.48], [.25, -.78], [-.88, -.78]
-                    ], [[
-                        [-.41, -.41], [.05, -.41], [.2, -.32], [.39, .13],
-                        [.34, .27], [.16, .36], [-.2, .36]
-                    ]]);
-                    addExtrudedLogoShape(logo, 'Entrance monument logo K stem', [
-                        [1.15, .72], [1.59, .72], [1.24, -.78], [.8, -.78]
-                    ]);
-                    addExtrudedLogoShape(logo, 'Entrance monument logo K upper arm', [
-                        [1.37, .08], [1.93, .72], [2.46, .72], [1.52, -.08]
-                    ]);
-                    addExtrudedLogoShape(logo, 'Entrance monument logo K lower arm', [
-                        [1.34, .09], [1.82, -.78], [2.35, -.78], [1.58, .29]
-                    ]);
+                    const geometry = new THREE.ExtrudeGeometry(tdkShapes, {
+                        depth: 38.8,
+                        bevelEnabled: true,
+                        bevelSegments: 2,
+                        bevelSize: 2.8,
+                        bevelThickness: 2.8,
+                        curveSegments: 8
+                    });
+                    const scale = 4.85 / 627;
+                    geometry.scale(scale, -scale, -scale);
+                    geometry.translate(-2.425, .665, .3);
+                    const mesh = new THREE.Mesh(geometry, [logoBlue, logoEdge]);
+                    mesh.name = 'Entrance monument official TDK wordmark';
+                    mesh.castShadow = true;
+                    mesh.receiveShadow = true;
+                    logo.add(mesh);
                 };
 
                 const brandCanvas = document.createElement('canvas');
@@ -6362,8 +6415,9 @@ import * as THREE from 'three';
                 fov: defaultCameraCalibration.fov
             };
             try {
-                const saved = window.TDK_FACTORY_CAMERA_OVERRIDE ||
-                    JSON.parse(localStorage.getItem(CAMERA_STORAGE_KEY));
+                const saved = window.TDK_FACTORY_CAMERA_OVERRIDE || (!window.TDK_VIEWER_ONLY
+                    ? JSON.parse(localStorage.getItem(CAMERA_STORAGE_KEY))
+                    : null);
                 if (Array.isArray(saved?.position) && saved.position.length === 3 && saved.position.every(Number.isFinite) &&
                     Array.isArray(saved?.target) && saved.target.length === 3 && saved.target.every(Number.isFinite) &&
                     Number.isFinite(saved?.fov)) {
@@ -6394,6 +6448,7 @@ import * as THREE from 'three';
             }
 
             function saveCameraCalibration() {
+                if (window.TDK_VIEWER_ONLY) return;
                 try { localStorage.setItem(CAMERA_STORAGE_KEY, JSON.stringify(currentCameraJSON())); }
                 catch (_) { /* Calibration still works for this page session. */ }
             }
