@@ -9,7 +9,7 @@ import {
 
 const source = readFileSync(new URL('../snapshots/baseline-2026-11-05/layout.json', import.meta.url));
 assert.equal(createHash('sha256').update(source).digest('hex'),
-    '263c223a07fdfa1c88ba80aed1d1e3c3dbbe9f181a1e5a89c9a8526c535fd004');
+    '484e73bd8d90898842a3621624d3c227acfb5d4369e473991076bb5ea934ae4d');
 assert.deepEqual(Object.keys(BUILDING_INTERIORS).sort(), BUILDINGS.map(item => item.id).sort());
 assert.deepEqual(BUILDING_INTERIORS.main_office.zones.map(zone => zone.id), [
     'main-office', 'md-room', 'meeting-1', 'meeting-2', 'restrooms'

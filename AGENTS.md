@@ -3,7 +3,7 @@
 The canonical hand-arranged map is the snapshot captured on 2026-11-05:
 
 - Layout: `snapshots/baseline-2026-11-05/layout.json`
-- Layout SHA-256: `263c223a07fdfa1c88ba80aed1d1e3c3dbbe9f181a1e5a89c9a8526c535fd004`
+- Layout SHA-256: `484e73bd8d90898842a3621624d3c227acfb5d4369e473991076bb5ea934ae4d`
 - Revision: 12
 - Objects: 671
 - Added: 52

@@ -1,6 +1,18 @@
 const EMBEDDED_LAYOUT_START = 'const embeddedLayout=';
 const EMBEDDED_LAYOUT_END = 'window.TDK_EMBEDDED_FACTORY_LAYOUT=embeddedLayout;';
 
+// Explicitly requested on 2026-11-19: move the two existing boom barriers
+// from the parking area to the factory entry/exit lanes. Every other baseline
+// field remains immutable, and only these exact positions are accepted.
+export const AUTHORIZED_EXISTING_OBJECT_TRANSFORMS = Object.freeze({
+    'scene-entrymboommbarriermm28p40m74p20m10p29m1p83m0p82-1': Object.freeze({
+        position: Object.freeze({ x: 2.75, y: 0, z: 92.75 })
+    }),
+    'scene-exitmboommbarriermm8p60m74p20m10p29m1p83m0p82-1': Object.freeze({
+        position: Object.freeze({ x: 22.5, y: 0, z: 92.75 })
+    })
+});
+
 function sameValue(left, right) {
     if (typeof left === 'number' && typeof right === 'number') {
         return left === right || Math.abs(left - right) <= 1e-9;
@@ -41,7 +53,15 @@ export function auditLayoutAgainstBaseline(layout, baseline) {
     const baselineObjects = baseline?.objects || {};
     for (const [id, expected] of Object.entries(baselineObjects)) {
         if (!Object.hasOwn(currentObjects, id)) differences.push(`${id} (missing)`);
-        else if (!sameValue(currentObjects[id], expected)) differences.push(`${id} (changed)`);
+        else if (!sameValue(currentObjects[id], expected)) {
+            const authorizedTransform = AUTHORIZED_EXISTING_OBJECT_TRANSFORMS[id];
+            const authorizedRecord = authorizedTransform
+                ? { ...expected, ...authorizedTransform }
+                : null;
+            if (!authorizedRecord || !sameValue(currentObjects[id], authorizedRecord)) {
+                differences.push(`${id} (changed)`);
+            }
+        }
     }
 
     const currentAdded = Array.isArray(layout?.added) ? layout.added : [];

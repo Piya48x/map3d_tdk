@@ -21,6 +21,17 @@ const changedAudit = auditLayoutAgainstBaseline(changed, baseline);
 assert.equal(changedAudit.ok, false);
 assert.ok(changedAudit.differences.includes('building-main_office (changed)'));
 
+const authorizedBarrierMove = structuredClone(baseline);
+authorizedBarrierMove.objects['scene-entrymboommbarriermm28p40m74p20m10p29m1p83m0p82-1'].position =
+    { x: 2.75, y: 0, z: 92.75 };
+authorizedBarrierMove.objects['scene-exitmboommbarriermm8p60m74p20m10p29m1p83m0p82-1'].position =
+    { x: 22.5, y: 0, z: 92.75 };
+assert.equal(auditLayoutAgainstBaseline(authorizedBarrierMove, baseline).ok, true,
+    'The explicitly requested boom-barrier positions must pass the locked-baseline audit');
+authorizedBarrierMove.objects['scene-entrymboommbarriermm28p40m74p20m10p29m1p83m0p82-1'].position.x += 0.01;
+assert.equal(auditLayoutAgainstBaseline(authorizedBarrierMove, baseline).ok, false,
+    'Any unrequested drift from the approved boom-barrier positions must fail');
+
 const drifted = structuredClone(additive);
 delete drifted.objects['scene-meshm50mm76p85mm5p00m0p80m0p06m160p00-1'];
 drifted.objects['scene-meshm85mm22p24m59p37m0p12m0p04m39p27-1'].position.x += 1;

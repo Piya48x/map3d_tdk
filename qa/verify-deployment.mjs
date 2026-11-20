@@ -20,6 +20,8 @@ assert.equal(liveMeta.buildId, expectedMeta.buildId,
     `Production build ${liveMeta.buildId} does not match local build ${expectedMeta.buildId}`);
 assert.equal(liveMeta.canonicalLayout, expectedMeta.canonicalLayout,
     'Production references a different canonical layout');
+assert.equal(liveMeta.deploymentLayout, expectedMeta.deploymentLayout,
+    'Production references a different deployment layout');
 
 const canonicalBytes = Buffer.from(await (await checkedFetch(
     './snapshots/baseline-2026-11-05/layout.json'
@@ -28,4 +30,11 @@ const liveCanonicalHash = createHash('sha256').update(canonicalBytes).digest('he
 assert.equal(liveCanonicalHash, expectedCanonicalHash,
     'Production canonical snapshot checksum does not match the locked baseline');
 
-console.log(`PASS: ${deploymentUrl.origin} serves build ${liveMeta.buildId} and canonical ${liveCanonicalHash}`);
+const deploymentBytes = Buffer.from(await (await checkedFetch(
+    './deployments/viewer-layout-2026-11-17.json'
+)).arrayBuffer());
+const liveDeploymentHash = createHash('sha256').update(deploymentBytes).digest('hex');
+assert.equal(liveDeploymentHash, expectedMeta.deploymentLayoutSha256,
+    'Production deployment layout checksum does not match the recovered map');
+
+console.log(`PASS: ${deploymentUrl.origin} serves build ${liveMeta.buildId}, canonical ${liveCanonicalHash}, and deployment map ${liveDeploymentHash}`);

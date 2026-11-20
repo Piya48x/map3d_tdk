@@ -1,8 +1,8 @@
 # TDK 3D Factory — development map
 
-The project uses Vite with pinned Three.js dependencies. `index.html` contains
-the page structure, `src/entry.js` selects viewer/editor mode and loads the
-locked canonical layout, then dynamically starts `src/main.js`:
+The project uses Vite with pinned Three.js dependencies. `index.html` is the
+single application page, and `src/entry.js` opens its editor workspace, loads
+the locked canonical layout, then dynamically starts `src/main.js`:
 
 - `src/main.js` initializes the scene, gameplay, object editor and interactions.
 - `src/factory-data.js` contains the photo-estimated building footprints, camera
@@ -16,7 +16,7 @@ locked canonical layout, then dynamically starts `src/main.js`:
 Run `npm install` once at the project root, then use:
 
 - `npm run dev` for the local Vite development server.
-- `npm run build` for the deployable `dist/` viewer.
+- `npm run build` for the deployable `dist/` application.
 - `npm run preview` to inspect the production build locally.
 - `npm run build:standalone` for the single-file embeddable runtime.
 - `npm run verify` to run the locked-layout tests and the Vite production build.

@@ -58,7 +58,7 @@ import { SITE } from './app-config.js';
                 gridBuilding('doke1_store', 'Doke 1 — อาคารกลาง / Store', 6.75, {
                     rotationY: 0,
                     roof: { type: 'barrel', axis: 'z', rise: 4.1, overhang: .58, skylight: 'sparse' },
-                    facade: { type: 'store', sign: true, loadingDoors: 1, blueRatio: .43 },
+                    facade: { type: 'store', sign: true, loadingDoors: 1, blueRatio: .6 },
                     vent: true, confidence: 'high', evidence: ['factory-satellite', 'factory-aerial', 'S__33005594']
                 }),
                 gridBuilding('doke2_assy', 'Doke 2 — Assy Hanon', 7.86, {
@@ -90,10 +90,11 @@ import { SITE } from './app-config.js';
             export const BUILDING_BY_ID = Object.fromEntries(BUILDINGS.map(item => [item.id, item]));
 
             export const CAMERA_PRESETS = {
-                // Latest camera calibration saved by the object-layout author.
-                reference: { position: [117, 85, 142], target: [34, 0, 31], fov: 42 },
-                // Presentation presets share a consistent visual centre and camera language.
-                aerial: { position: [151, 142, 169], target: [32, 0, 31], fov: 43 },
+                // Locked to the user-supplied 2026-11-17 aerial-reference shot.
+                reference: { position: [140, 125, 160], target: [30, 0, 60], fov: 43 },
+                // The initial overview now opens on the same composition to avoid a jump
+                // between the landing shot and the Aerial Reference control.
+                aerial: { position: [140, 125, 160], target: [30, 0, 60], fov: 43 },
                 gate: { position: [-48, 24, 132], target: [-20, 4.5, 60], fov: 42 },
                 office: { position: [27, 35, 111], target: [-21.75, 4.5, 60.75], fov: 38 },
                 factory: { position: [-132, 58, 83], target: [-2, 7, -22], fov: 43 },

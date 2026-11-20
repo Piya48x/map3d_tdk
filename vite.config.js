@@ -6,10 +6,11 @@ import { defineConfig } from 'vite';
 
 const projectRoot = new URL('./', import.meta.url);
 const projectRootPath = fileURLToPath(projectRoot);
-const canonicalLayoutId = 'baseline-2026-11-05:263c223a07fdfa1c88ba80aed1d1e3c3dbbe9f181a1e5a89c9a8526c535fd004';
+const canonicalLayoutId = 'baseline-2026-11-05:484e73bd8d90898842a3621624d3c227acfb5d4369e473991076bb5ea934ae4d';
 const buildSourceFiles = [
     './src/entry.js', './src/canonical-layout-loader.js', './src/main.js',
-    './src/factory-data.js', './src/app-config.js', './index.html'
+    './src/factory-data.js', './src/app-config.js', './index.html',
+    './deployments/viewer-layout-2026-11-17.json'
 ];
 const buildId = createHash('sha256')
     .update(buildSourceFiles.map(file => readFileSync(new URL(file, projectRoot))).join('\n'))
@@ -37,13 +38,23 @@ function stableRuntimeAssets() {
             });
             this.emitFile({
                 type: 'asset',
+                fileName: 'deployments/viewer-layout-2026-11-17.json',
+                source: readFileSync(new URL('./deployments/viewer-layout-2026-11-17.json', projectRoot))
+            });
+            this.emitFile({
+                type: 'asset',
                 fileName: 'tdk-factory-map.js',
                 source: readFileSync(new URL('./tdk-factory-map.js', projectRoot))
             });
             this.emitFile({
                 type: 'asset',
                 fileName: 'build-meta.json',
-                source: JSON.stringify({ buildId, canonicalLayout: canonicalLayoutId }, null, 2)
+                source: JSON.stringify({
+                    buildId,
+                    canonicalLayout: canonicalLayoutId,
+                    deploymentLayout: 'viewer-layout-2026-11-17',
+                    deploymentLayoutSha256: 'ad2e98e3b77fa3ac33d85278e53cabce24d1d379b5e95cd354b21fa8a457ab86'
+                }, null, 2)
             });
         }
     };

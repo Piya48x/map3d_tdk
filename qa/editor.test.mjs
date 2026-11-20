@@ -37,6 +37,7 @@ function boot(saved, savedCamera, view = '', viewerOnly = false, openEditor = fa
     const dom = new JSDOM(html, { url: `http://127.0.0.1:5500/v7/index.html${suffix}`, runScripts: 'outside-only', pretendToBeVisual: true });
     const win = dom.window;
     win.TDK_VIEWER_ONLY = viewerOnly;
+    win.TDK_START_IN_EDITOR = openEditor;
     const context = dom.getInternalVMContext();
     win.HTMLCanvasElement.prototype.getContext = () => new Proxy({}, { get: (_, key) =>
         key === 'measureText' ? text => ({ width: text.length * 12 }) : () => {} });
@@ -81,7 +82,12 @@ function boot(saved, savedCamera, view = '', viewerOnly = false, openEditor = fa
         get player() { return player; }, get gameMode() { return gameMode; },
         get activityActors() { return [...workers, ...movingForklifts, ...movingVehicles]; },
         get activityObstacles() { return activityObstacles; },
-        updateActivity, updatePresentationEnvironmentTransition, updatePresentationShow,
+        get deliveryRun() { return deliveryRun; },
+        get boomBarriers() { return { entry: entryBoomBarrier, exit: exitBoomBarrier }; },
+        stepActivity,
+        get activityBarriers() { return { entry: entryBoomBarrier, exit: exitBoomBarrier }; },
+        get deliveryActor() { return deliveryActor; },
+        updateActivity, updateEntranceSpeedSigns, updatePresentationEnvironmentTransition, updatePresentationShow,
         get environmentTransitionStartedAt() { return presentationShowState.environmentTransition?.startedAt ?? 0; },
         get presentationStartedAt() { return presentationShowState.startedAt; },
         get presentationTourStops() { return EXECUTIVE_TOUR_STOPS; },
@@ -130,9 +136,15 @@ const securityBooth = api.objects.get('security-booth');
 const cardAccess = api.objects.get('security-card-access');
 const entranceMonument = api.objects.get('entrance-tdk-monument-v1');
 const entranceAvenue = api.objects.get('entrance-landscaped-avenue-v1');
+const entranceBoundaryWall = api.objects.get('entrance-boundary-wall-v1');
+const landscapeGrass = api.objects.get('landscape-grass-ground-v1');
 assert.ok(securityBooth && cardAccess, 'Security booth and card access should be separate editable objects');
 assert.ok(entranceMonument, 'Reference-inspired TDK entrance monument should use a stable additive ID');
 assert.ok(entranceAvenue, 'Landscaped entrance avenue should use a separate stable additive ID');
+assert.ok(entranceBoundaryWall && !entranceBoundaryWall.userData.editor.builtin,
+    'Entrance boundary wall should be its own stable additive editor object');
+assert.ok(landscapeGrass && !landscapeGrass.userData.editor.builtin,
+    'Grass ground should be a stable additive object instead of changing a baseline record');
 assert.ok(entranceMonument.position.z > 78 && entranceMonument.position.x > -6,
     'Entrance monument should stand outside the right side of the vehicle gate');
 assert.ok(entranceMonument.getObjectByName('Entrance monument panel')?.isMesh &&
@@ -148,6 +160,34 @@ assert.ok(entranceAvenue.getObjectByName('Entrance avenue red curbs')?.isInstanc
     entranceAvenue.getObjectByName('Entrance avenue hedges')?.isInstancedMesh &&
     entranceAvenue.getObjectByName('Entrance avenue tree crowns')?.isInstancedMesh,
     'Entrance avenue should include efficient instanced curbs, hedges, and trees');
+assert.equal(entranceAvenue.getObjectByName('Entrance avenue white wall segment'), undefined,
+    'Landscaping object should no longer contain the boundary wall');
+const entranceWallSegments = entranceBoundaryWall.children.filter(child =>
+    child.name === 'Entrance avenue white wall segment');
+const entranceOpenings = entranceBoundaryWall.children.filter(child =>
+    /^Entrance avenue wall access opening \d$/.test(child.name));
+const entranceSlidingGates = entranceBoundaryWall.children.filter(child =>
+    /^Entrance avenue access \d open blue sliding gate (left|right)$/.test(child.name));
+assert.equal(entranceWallSegments.length, 3,
+    'Two entrance openings should divide the wall into three independent spans');
+assert.equal(entranceOpenings.length, 2, 'Boundary wall should contain two clear vehicle openings');
+assert.equal(entranceSlidingGates.length, 4,
+    'Both openings should use two parked blue sliding gate leaves');
+assert.ok(entranceBoundaryWall.getObjectByName('Entrance avenue access 2 pillar')?.isMesh,
+    'The added entrance should have its own concrete gate pillars');
+const entranceSpeedSign = entranceBoundaryWall.getObjectByName('Entrance avenue speed limit 20 kmh');
+assert.ok(entranceSpeedSign?.getObjectByName('Entrance speed limit 20 face')?.isMesh,
+    'Entrance should include a dedicated 20 km/h sign face');
+const speedBeacons = [
+    entranceSpeedSign.getObjectByName('Entrance speed sign red beacon left'),
+    entranceSpeedSign.getObjectByName('Entrance speed sign red beacon right')
+];
+assert.ok(speedBeacons.every(beacon => beacon?.isMesh),
+    'Speed sign should include two red warning beacons');
+const initialBeaconIntensity = speedBeacons[0].material.emissiveIntensity;
+api.updateEntranceSpeedSigns(.5);
+assert.notEqual(speedBeacons[0].material.emissiveIntensity, initialBeaconIntensity,
+    'Entrance speed sign warning beacons should blink');
 assert.equal(cardAccess.parent, api.scene, 'Card access should not be parented to the security booth');
 assert.ok(Math.abs(cardAccess.position.x - securityBooth.position.x) < 1e-6 &&
     cardAccess.position.z > securityBooth.position.z,
@@ -168,14 +208,14 @@ assert.ok(Math.abs(forestPath.position.z - api.objects.get('building-main_office
 assert.match(doc.getElementById('editor-cut').textContent, /✂️/,
     'Partial cut action should show a scissors icon');
 const buildings = Object.fromEntries(win.TDK_LAYOUT.BUILDINGS.map(building => [building.id, building]));
-near(api.camera.position.x, 151); near(api.camera.position.y, 142); near(api.camera.position.z, 169);
-near(api.camera.fov, 43); near(api.controls.target.x, 32); near(api.controls.target.y, 0); near(api.controls.target.z, 31);
+near(api.camera.position.x, 140); near(api.camera.position.y, 125); near(api.camera.position.z, 160);
+near(api.camera.fov, 43); near(api.controls.target.x, 30); near(api.controls.target.y, 0); near(api.controls.target.z, 60);
 assert.equal(doc.querySelector('.view[data-view="aerial"]').classList.contains('active'), true,
     'Aerial view should be selected on initial page load');
 const aerialPreset = win.TDK_LAYOUT.CAMERA_PRESETS.aerial;
-assert.deepEqual(Array.from(aerialPreset.position), [151, 142, 169]);
-assert.deepEqual(Array.from(aerialPreset.target), [32, 0, 31]);
-assert.equal(aerialPreset.fov, 43, 'Aerial view should balance the full edited campus around one visual centre');
+assert.deepEqual(Array.from(aerialPreset.position), [140, 125, 160]);
+assert.deepEqual(Array.from(aerialPreset.target), [30, 0, 60]);
+assert.equal(aerialPreset.fov, 43, 'Aerial view should match the saved aerial-reference shot');
 assert.equal(api.buildingNightLights.length, win.TDK_LAYOUT.BUILDINGS.length * 2,
     'Every building should have two night lights');
 assert.equal(api.scene.getObjectByName('Factory streetlights').children.filter(object => object.isLight).length,
@@ -265,6 +305,15 @@ canteen.traverse(object => {
     if (object.isMesh && object.material === api.materials.officeWhite) canteenWhiteFacadePieces += 1;
 });
 assert.ok(canteenWhiteFacadePieces > 20, 'Canteen should retain a layered white facade');
+const dieSetFacade = canteen.getObjectByName('DIE-SET photo facade details');
+assert.ok(dieSetFacade?.isGroup, 'DIE-SET should carry the photo-referenced balcony facade group');
+assert.ok(dieSetFacade.getObjectByName('DIE-SET balcony slab')?.isMesh &&
+    dieSetFacade.getObjectByName('DIE-SET safety first board')?.isGroup &&
+    dieSetFacade.getObjectByName('DIE-SET R&D center sign')?.isMesh,
+    'DIE-SET should show the draped balcony, SAFETY FIRST board and R&D Center entrance');
+const safetyBoard = dieSetFacade.getObjectByName('DIE-SET safety first board');
+assert.ok(Math.abs(safetyBoard.rotation.y - Math.PI / 2) < 1e-6 && safetyBoard.position.x > 0,
+    'DIE-SET safety board should hang on the side elevation facing the internal yard');
 assert.ok(api.objects.get('building-doke1_west').getObjectByName('TDK company sign'),
     'Doke 1 should display the TDK company sign on its front facade');
 assert.ok(doke2.getObjectByName('TDK company sign'),
@@ -286,15 +335,17 @@ const storeSign = storeBuilding.getObjectByName('TDK company sign');
 assert.ok(storeSign, 'Store should display a TDK company sign');
 assert.ok(storeSign.geometry.parameters.width / storeSign.geometry.parameters.height > 5,
     'Store company sign should retain a wide, readable signboard shape');
-assert.ok(Math.abs(storeSign.rotation.y - Math.PI / 2) < 1e-6,
-    'Store sign should be mounted flat on the long wall, not on the curved end gable');
+assert.ok(Math.abs(storeSign.rotation.y) < 1e-6,
+    'Store sign should face the forecourt on the blue entrance wall');
 const storeRenderWidth = buildings.doke1_store.size.width * 1.54;
 const storeRenderDepth = buildings.doke1_store.size.depth * 1.54;
 const storeRenderHeight = buildings.doke1_store.size.height * 1.54;
-assert.ok(storeSign.position.x > storeRenderWidth / 2 + .2,
-    'Store sign should hang on the outward face of the long east wall');
-assert.ok(Math.abs(storeSign.position.z) + storeSign.geometry.parameters.width / 2 < storeRenderDepth / 2,
-    'Store sign should stay within the length of that wall');
+assert.ok(storeSign.position.z > storeRenderDepth / 2,
+    'Store sign should hang in front of the blue entrance wall');
+assert.ok(Math.abs(storeSign.position.x) < 1e-6,
+    'Store sign should be centred on the entrance wall');
+assert.ok(Math.abs(storeSign.position.x) + storeSign.geometry.parameters.width / 2 < storeRenderWidth / 2,
+    'Store sign should stay within the width of the entrance wall');
 const storeBlueBottom = .3 + storeRenderHeight * (1 - buildings.doke1_store.facade.blueRatio);
 const storeBlueTop = .3 + storeRenderHeight;
 assert.ok(storeSign.position.y - storeSign.geometry.parameters.height / 2 >= storeBlueBottom,
@@ -411,6 +462,19 @@ assert.ok(crate);
 const crateBaseWidth = Number(doc.getElementById('editor-sx').value);
 const crateBaseLength = Number(doc.getElementById('editor-sz').value);
 assert.ok(crateBaseWidth > 0 && crateBaseLength > 0, 'Selected object dimensions should be shown in scene units');
+let crateMesh = null;
+crate.traverse(object => { if (!crateMesh && object.isMesh) crateMesh = object; });
+const straightGeometry = crateMesh.geometry;
+change(env, 'editor-bend', 60);
+assert.equal(crate.userData.editor.bend.angle, 60);
+assert.equal(crate.userData.editor.bend.axis, 'x');
+assert.notEqual(crateMesh.geometry, straightGeometry, 'Bending should use an isolated, subdivided geometry');
+click(env, 'editor-undo');
+assert.equal(crate.userData.editor.bend.angle, 0, 'Undo should restore the straight object');
+click(env, 'editor-redo');
+assert.equal(crate.userData.editor.bend.angle, 60, 'Redo should restore the curve');
+click(env, 'editor-bend-reset');
+assert.equal(crate.userData.editor.bend.angle, 0, 'Reset should remove the curve');
 change(env, 'editor-sx', crateBaseWidth * 2);
 near(crate.scale.x, 2); near(crate.scale.y, 2); near(crate.scale.z, 2);
 assert.ok(Math.abs(Number(doc.getElementById('editor-sx').value) - crateBaseWidth * 2) < .02,
@@ -433,10 +497,18 @@ assert.ok(Math.abs(Number(doc.getElementById('editor-sz').value) - crateBaseLeng
     'Length field should show the updated real dimension');
 change(env, 'editor-name', 'ทดสอบลัง');
 assert.equal(crate.userData.editor.label, 'ทดสอบลัง');
+change(env, 'editor-bend-axis', 'z');
+change(env, 'editor-bend', 35);
+assert.equal(crate.userData.editor.bend.angle, 35);
+assert.equal(crate.userData.editor.bend.axis, 'z');
 click(env, 'editor-duplicate');
 assert.equal(api.selected.length, 1);
 const copy = api.selected[0];
 near(copy.scale.z, 3); near(copy.position.y, 3);
+assert.equal(copy.userData.editor.bend.angle, 35,
+    'Duplicate should preserve the bend angle');
+assert.equal(copy.userData.editor.bend.axis, 'z',
+    'Duplicate should preserve the bend axis');
 click(env, 'editor-delete'); assert.equal(api.objects.has(copy.userData.editor.id), false);
 click(env, 'editor-undo'); assert.equal(api.objects.has(copy.userData.editor.id), true);
 click(env, 'editor-redo'); assert.equal(api.objects.has(copy.userData.editor.id), false);
@@ -643,6 +715,12 @@ assert.equal(reloaded.api.objects.get(cloneId).userData.editor.label, 'Office co
 near(reloaded.api.objects.get(cloneId).position.x, 70);
 near(reloaded.api.objects.get(crate.userData.editor.id).scale.x, savedGroupScale);
 assert.equal(reloaded.api.objects.get(crate.userData.editor.id).userData.editor.label, 'ทดสอบลัง');
+assert.equal(reloaded.api.objects.get(crate.userData.editor.id).userData.editor.bend.angle, 35,
+    'Saved curve should reload with its angle');
+assert.equal(reloaded.api.objects.get(crate.userData.editor.id).userData.editor.bend.axis, 'z',
+    'Saved curve should reload with its axis');
+api.selectEditable(crate);
+click(env, 'editor-bend-reset');
 assert.equal(reloaded.api.objects.get(cloneId).children.length, office.children.length);
 assert.equal(reloaded.api.objects.get(cloneId).userData.editor.renderMode, 'front');
 let reloadedFrontMesh = null;
@@ -666,13 +744,13 @@ near(customCamera.api.camera.fov, 45);
 const migratedCamera = boot(undefined, JSON.stringify({
     position: [-78, 150, 210], target: [37, 2, 10], fov: 40
 }), 'photo');
-near(migratedCamera.api.camera.position.x, 117);
-near(migratedCamera.api.camera.fov, 42);
+near(migratedCamera.api.camera.position.x, 140);
+near(migratedCamera.api.camera.fov, 43);
 const migratedCurrentCamera = boot(undefined, JSON.stringify({
-    position: [8, 120, 170], target: [25, 2, 10], fov: 46
+    position: [117, 85, 142], target: [34, 0, 31], fov: 42
 }), 'photo');
-near(migratedCurrentCamera.api.camera.position.x, 117);
-near(migratedCurrentCamera.api.camera.fov, 42);
+near(migratedCurrentCamera.api.camera.position.x, 140);
+near(migratedCurrentCamera.api.camera.fov, 43);
 const migratedLayout = boot(JSON.stringify({
     revision: 10,
     objects: {
@@ -699,13 +777,16 @@ assert.ok(migrated.win.localStorage.getItem('tdk-v7-object-layout-v1-backup-r6')
 near(migrated.api.objects.get('building-main_office').scale.x, 1);
 assert.equal(migrated.api.objects.get(cloneId).userData.editor.label, 'Office copy');
 const lockedBaseline = JSON.parse(readFileSync(new URL('../snapshots/baseline-2026-11-05/layout.json', import.meta.url), 'utf8'));
+const deploymentLayout = JSON.parse(readFileSync(new URL('../deployments/viewer-layout-2026-11-17.json', import.meta.url), 'utf8'));
 const baselineRoundTrip = boot(JSON.stringify(lockedBaseline));
 const movingActors = baselineRoundTrip.api.activityActors;
 const routeObstacles = baselineRoundTrip.api.activityObstacles;
-assert.equal(movingActors.length, 16);
+// The delivery lorry is scripted rather than grid-navigated, so it is checked separately.
+assert.equal(movingActors.length, 15);
 for (const actor of movingActors) {
     assert.ok(actor.navLoop && actor.mesh.visible, 'Every worker and vehicle needs a usable route');
-    assert.ok(actor.navLoop.total > 25, 'Activity routes must not collapse into tiny loops');
+    assert.ok(actor.navLoop.total > 25,
+        `Activity route for ${actor.role || 'actor'} must not collapse into a tiny loop (${actor.navLoop.total})`);
     const { points } = actor.navLoop;
     for (let i = 1; i < points.length; i++) {
         const a = points[i - 1], b = points[i];
@@ -726,19 +807,83 @@ movingActors.forEach((actor, index) => {
     assert.ok(actor.mesh.position.distanceTo(initialActorPositions[index]) > .5,
         'Every worker and vehicle should continue moving');
 });
-const truck = movingActors.at(-1);
-let truckOverlap = 0;
-for (let length = 0; length < truck.navLoop.total; length += .5) {
-    const p = positionOnActivityLoop(truck.navLoop, length / truck.navLoop.total);
-    for (const localZ of [-3.5, 0, 3.5, 5.8]) for (const localX of [-1.5, 0, 1.5]) {
-        const x = p.x + Math.cos(p.heading) * localX + Math.sin(p.heading) * localZ;
-        const z = p.z - Math.sin(p.heading) * localX + Math.cos(p.heading) * localZ;
-        if (routeObstacles.some(box => x >= box.minX && x <= box.maxX && z >= box.minZ && z <= box.maxZ)) truckOverlap++;
-    }
+// The delivery lorry is scripted rather than navigated, so its gate timeline, dock and
+// barrier hand-off are checked directly.
+const deliveryBoot = boot(JSON.stringify(deploymentLayout));
+const deliveryRun = deliveryBoot.api.deliveryRun;
+assert.ok(deliveryRun.path[0][1] > 90, 'Delivery lorry should start outside the gate');
+assert.ok(deliveryRun.path.some(([x, z]) => Math.abs(x - 7.7) < 1 && Math.abs(z - 101) < 1),
+    'Delivery lorry should stop on the entry lane at the entry boom');
+assert.ok(deliveryRun.path.some(([x, z]) => Math.abs(x - 19.4) < 1 && Math.abs(z + 18) < 1),
+    'Delivery lorry should unload beside the Store loading canopy');
+assert.ok(deliveryRun.path.some(([x, z]) => Math.abs(x - 17.5) < 1 && Math.abs(z - 85) < 1),
+    'Delivery lorry should leave through the exit lane');
+assert.equal(deliveryRun.entryOpen, false, 'Entry boom must stay closed before the inspection');
+assert.equal(deliveryRun.exitOpen, false, 'Exit boom must stay closed until the lorry leaves');
+const { entry, exit } = deliveryBoot.api.boomBarriers;
+assert.ok(Math.abs(entry.position.x - 2.75) < .01 && Math.abs(entry.position.z - 92.75) < .01,
+    'Entry boom barrier should stand across the inbound gate lane');
+assert.ok(Math.abs(exit.position.x - 22.5) < .01 && Math.abs(exit.position.z - 92.75) < .01,
+    'Exit boom barrier should stand across the outbound gate lane');
+assert.equal(entry.userData.activityBarrier.openness, 0, 'Entry boom should start lowered');
+let boomLifted = false;
+for (let frame = 0; frame < 600 && !boomLifted; frame++) {
+    deliveryBoot.api.stepActivity(.05);
+    boomLifted = deliveryRun.entryOpen === true;
 }
-assert.equal(truckOverlap, 0, 'The truck body must stay clear of saved walls and buildings');
+assert.ok(boomLifted, 'Entry boom should be commanded open after the lorry clears inspection');
+for (let frame = 0; frame < 20; frame++) deliveryBoot.api.stepActivity(.05);
+assert.ok(entry.userData.activityBarrier.openness > .3,
+    'Entry boom arm should actually rise for the lorry');
+const routeXs = deliveryRun.path.map(([x]) => x);
+const routeZs = deliveryRun.path.map(([, z]) => z);
+assert.ok(Math.min(...routeXs) > 6 && Math.max(...routeXs) < 26,
+    'The delivery route must stay between the entry road and the Store service lane');
+assert.ok(Math.min(...routeZs) > -40 && Math.max(...routeZs) < 130,
+    'The delivery route must stay on the gate approach and the Store service lane');
+assert.ok(Math.abs(deliveryRun.path.at(-1)[0] - deliveryRun.path[0][0]) < 6,
+    'The delivery run should close back onto the public road approach');
+const roadCars = deliveryBoot.api.activityActors.filter(actor =>
+    actor.role === 'visitor-car' || actor.role === 'staff-car');
+assert.equal(roadCars.length, 3, 'Three small cars should animate along the entrance road');
+for (const actor of roadCars) {
+    assert.ok(actor.curve.points.some(point => point.z >= 120),
+        'Each small car should arrive from the public road outside the boom barriers');
+    assert.ok(actor.curve.points.some(point => point.z <= 46),
+        'Each small car should reach the company frontage before leaving');
+    assert.ok(actor.curve.points.some(point => point.x < 12.5 && point.z >= 92 && point.z <= 101),
+        'Each small car should pass through the entry boom lane');
+    assert.ok(actor.curve.points.some(point => point.x > 12.5 && point.z >= 88 && point.z <= 97),
+        'Each small car should leave through the exit boom lane');
+    assert.ok(actor.randomArrival?.maxDelay > actor.randomArrival?.minDelay,
+        'Each small car should have an independent random arrival delay');
+}
+assert.equal(new Set(roadCars.map(actor => actor.speed.toFixed(5))).size, roadCars.length,
+    'Small cars should use randomized speeds instead of moving as a synchronized convoy');
+const randomArrivalCar = roadCars[0];
+randomArrivalCar.navDistance = randomArrivalCar.navLoop.total - .001;
+deliveryBoot.api.updateActivity(.05);
+assert.ok(randomArrivalCar.waitRemaining >= randomArrivalCar.randomArrival.minDelay &&
+    randomArrivalCar.waitRemaining <= randomArrivalCar.randomArrival.maxDelay,
+'A small car should wait a randomized interval outside before its next arrival');
+
+const assignedWorkers = deliveryBoot.api.activityActors.filter(actor => actor.workplace);
+assert.equal(assignedWorkers.length, 10, 'All ten workers should have an assigned workplace');
+assert.deepEqual(new Set(assignedWorkers.map(actor => actor.workplace)), new Set([
+    'gate', 'main-office', 'doke1-west', 'doke1-store', 'doke2-assy', 'rack-dome', 'canteen'
+]), 'Workers should disperse among the gate and all six workplace buildings');
+for (const actor of assignedWorkers) {
+    const stop = actor.serviceStops[0];
+    const nearestStopPoint = actor.navLoop.points.reduce((best, point) =>
+        Math.hypot(point.x - stop.x, point.z - stop.z) < Math.hypot(best.x - stop.x, best.z - stop.z)
+            ? point : best);
+    const nearestStopDistance = Math.hypot(nearestStopPoint.x - stop.x, nearestStopPoint.z - stop.z);
+    assert.ok(nearestStopDistance < 8,
+        `${actor.workplace} worker route should reach its assigned building frontage (${nearestStopDistance} at ${nearestStopPoint.x},${nearestStopPoint.z})`);
+}
 const roundTripState = baselineRoundTrip.api.saveEditorLayout();
 const roundTripAudit = auditExportLayout(roundTripState, lockedBaseline);
+
 if (!roundTripAudit.ok) {
     const firstId = roundTripAudit.differences.find(item => item.includes('(changed)'))?.split(' ')[0];
     console.error('Baseline round-trip audit:', roundTripAudit.differences.length, roundTripAudit.differences.slice(0, 5));
@@ -766,7 +911,7 @@ viewer.doc.getElementById('editor-toggle').click();
 assert.equal(viewer.api.mode, false, 'Deploy viewer must reject programmatic attempts to enter editor mode');
 assert.equal(viewer.win.TDK_OBJECT_EDITOR, undefined, 'Deploy viewer must not expose the editor object registry');
 const editorEntry = boot(JSON.stringify(lockedBaseline), undefined, '', false, true);
-assert.equal(editorEntry.api.mode, true, 'editor.html entry must open directly in layout editor mode');
+assert.equal(editorEntry.api.mode, true, 'index.html entry must open directly in layout editor mode');
 assert.equal(editorEntry.doc.getElementById('editor-view-interior').disabled, true);
 editorEntry.api.selectEditable(editorEntry.api.objects.get('building-main_office'));
 assert.equal(editorEntry.doc.getElementById('editor-view-interior').disabled, false);

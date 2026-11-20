@@ -214,6 +214,17 @@
                 <label>สูง Y<input id="editor-sy" type="number" step="0.25"></label>
                 <label>ยาว Z<input id="editor-sz" type="number" step="0.25"></label>
             </div>
+            <span class="editor-section-title editor-deform-title">ดัดรูปทรง · Bend / Curve</span>
+            <div class="editor-deform-controls">
+                <label>ความโค้ง °<input id="editor-bend" type="number" min="-180" max="180" step="5" value="0"></label>
+                <label>แกนความยาว<select id="editor-bend-axis">
+                    <option value="x">X</option>
+                    <option value="y">Y</option>
+                    <option value="z">Z</option>
+                </select></label>
+                <button id="editor-bend-reset" type="button">คืนทรงตรง</button>
+            </div>
+            <small class="editor-deform-help">ค่าบวก/ลบจะโค้งคนละทิศ · ใช้ได้กับวัตถุที่เลือกหนึ่งชิ้น</small>
             <label class="editor-check"><input id="editor-uniform" type="checkbox"
                     checked>รักษาสัดส่วนเมื่อปรับขนาด</label>
             <div class="editor-grid">

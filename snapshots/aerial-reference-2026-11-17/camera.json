@@ -1,0 +1,11 @@
+{
+  "shot": "aerial-reference-2026-11-17",
+  "source": "user-supplied-reference",
+  "viewport": {
+    "width": 1917,
+    "height": 914
+  },
+  "position": [140, 125, 160],
+  "target": [30, 0, 60],
+  "fov": 43
+}

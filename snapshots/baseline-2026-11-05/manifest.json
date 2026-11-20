@@ -10,7 +10,7 @@
     "cuts": 1,
     "file": "layout.json",
     "bytes": 313860,
-    "sha256": "263c223a07fdfa1c88ba80aed1d1e3c3dbbe9f181a1e5a89c9a8526c535fd004"
+    "sha256": "484e73bd8d90898842a3621624d3c227acfb5d4369e473991076bb5ea934ae4d"
   },
   "export": {
     "file": "../../exports/tdk-factory-map-baseline-2026-11-05.js",

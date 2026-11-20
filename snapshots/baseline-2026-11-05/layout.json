@@ -7185,9 +7185,9 @@
       "type": "sceneObject",
       "label": "Entry boom barrier",
       "position": {
-        "x": 2.75,
+        "x": -28.4,
         "y": 0,
-        "z": 92.75
+        "z": 74.2
       },
       "rotation": {
         "x": 0,
@@ -7205,9 +7205,9 @@
       "type": "sceneObject",
       "label": "Exit boom barrier",
       "position": {
-        "x": 22.5,
+        "x": -8.6,
         "y": 0,
-        "z": 92.75
+        "z": 74.2
       },
       "rotation": {
         "x": 0,

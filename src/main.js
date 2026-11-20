@@ -260,6 +260,7 @@ import * as THREE from 'three';
             // Revision 12 resets saved built-in scales that made the west Doke 1 hall oversized.
             const EDITOR_LAYOUT_REVISION = 12;
             const editorRenderModeStates = new WeakMap();
+            const editorBendStates = new WeakMap();
             const editableObjects = new Map();
             let activityObstacleRevision = 0;
             const builtinTemplates = new Map();
@@ -587,6 +588,104 @@ import * as THREE from 'three';
                 if (group.userData.editor) group.userData.editor.renderMode = mode;
             }
 
+            function restoreEditorBendGeometry(group) {
+                const state = editorBendStates.get(group);
+                if (!state) return;
+                state.meshes.forEach(({ object, originalGeometry, sourceGeometry, deformedGeometry }) => {
+                    object.geometry = originalGeometry;
+                    sourceGeometry.dispose();
+                    deformedGeometry.dispose();
+                });
+                editorBendStates.delete(group);
+            }
+
+            function applyEditorBend(group, angle = 0, axis = 'x') {
+                if (!group?.userData.editor) return false;
+                const previousBend = { ...(group.userData.editor.bend || { angle: 0, axis: 'x' }) };
+                const bendAxis = ['x', 'y', 'z'].includes(axis) ? axis : 'x';
+                const bendAngle = THREE.MathUtils.clamp(Number(angle) || 0, -180, 180);
+                group.userData.editor.bend = { angle: bendAngle, axis: bendAxis };
+                if (Math.abs(bendAngle) < .001) {
+                    restoreEditorBendGeometry(group);
+                    return true;
+                }
+
+                let state = editorBendStates.get(group);
+                if (!state) {
+                    const meshes = [];
+                    group.traverse(object => {
+                        if (!object.isMesh || object.isInstancedMesh || object.isSkinnedMesh ||
+                            !object.geometry?.attributes?.position) return;
+                        const originalGeometry = object.geometry;
+                        const sourceGeometry = originalGeometry === unitBox
+                            ? new THREE.BoxGeometry(1, 1, 1, 8, 8, 8)
+                            : originalGeometry.clone();
+                        const deformedGeometry = sourceGeometry.clone();
+                        object.geometry = deformedGeometry;
+                        meshes.push({ object, originalGeometry, sourceGeometry, deformedGeometry });
+                    });
+                    if (!meshes.length) {
+                        group.userData.editor.bend = previousBend;
+                        return false;
+                    }
+                    state = { meshes };
+                    editorBendStates.set(group, state);
+                }
+
+                group.updateWorldMatrix(true, true);
+                const inverseRoot = group.matrixWorld.clone().invert();
+                const rootBounds = new THREE.Box3();
+                const sourcePoint = new THREE.Vector3();
+                const rootPoint = new THREE.Vector3();
+                const meshToRoot = new THREE.Matrix4();
+                state.meshes.forEach(({ object, sourceGeometry }) => {
+                    meshToRoot.multiplyMatrices(inverseRoot, object.matrixWorld);
+                    const source = sourceGeometry.attributes.position;
+                    for (let index = 0; index < source.count; index++) {
+                        sourcePoint.fromBufferAttribute(source, index).applyMatrix4(meshToRoot);
+                        rootBounds.expandByPoint(sourcePoint);
+                    }
+                });
+                if (rootBounds.isEmpty()) return false;
+                const center = rootBounds.getCenter(new THREE.Vector3());
+                const minimum = rootBounds.min[bendAxis];
+                const length = Math.max(.001, rootBounds.max[bendAxis] - minimum);
+                const radians = THREE.MathUtils.degToRad(bendAngle);
+                const radius = length / radians;
+
+                state.meshes.forEach(({ object, sourceGeometry, deformedGeometry }) => {
+                    meshToRoot.multiplyMatrices(inverseRoot, object.matrixWorld);
+                    const rootToMesh = meshToRoot.clone().invert();
+                    const source = sourceGeometry.attributes.position;
+                    const target = deformedGeometry.attributes.position;
+                    for (let index = 0; index < source.count; index++) {
+                        rootPoint.fromBufferAttribute(source, index).applyMatrix4(meshToRoot);
+                        const progress = THREE.MathUtils.clamp((rootPoint[bendAxis] - minimum) / length, 0, 1);
+                        const theta = radians * progress;
+                        if (bendAxis === 'x') {
+                            const offset = rootPoint.y - center.y;
+                            rootPoint.x = minimum + Math.sin(theta) * (radius + offset);
+                            rootPoint.y = center.y + radius * (1 - Math.cos(theta)) + offset * Math.cos(theta);
+                        } else if (bendAxis === 'z') {
+                            const offset = rootPoint.y - center.y;
+                            rootPoint.z = minimum + Math.sin(theta) * (radius + offset);
+                            rootPoint.y = center.y + radius * (1 - Math.cos(theta)) + offset * Math.cos(theta);
+                        } else {
+                            const offset = rootPoint.x - center.x;
+                            rootPoint.y = minimum + Math.sin(theta) * (radius + offset);
+                            rootPoint.x = center.x + radius * (1 - Math.cos(theta)) + offset * Math.cos(theta);
+                        }
+                        rootPoint.applyMatrix4(rootToMesh);
+                        target.setXYZ(index, rootPoint.x, rootPoint.y, rootPoint.z);
+                    }
+                    target.needsUpdate = true;
+                    deformedGeometry.computeVertexNormals();
+                    deformedGeometry.computeBoundingBox();
+                    deformedGeometry.computeBoundingSphere();
+                });
+                return true;
+            }
+
             function registerEditable(group, {
                 id, type, label, builtin = true, collidable = true, sourceId = null, cuttable = false,
                 asset = null
@@ -595,7 +694,7 @@ import * as THREE from 'three';
                 group.name = label || id;
                 group.userData.editor = {
                     id, type, label: label || id, builtin, collidable, sourceId, cuttable, renderMode: 'back',
-                    baseY: group.position.y,
+                    baseY: group.position.y, bend: { angle: 0, axis: 'x' },
                     ...(asset ? { asset: structuredClone(asset) } : {})
                 };
                 if (builtin) builtinTemplates.set(id, group);
@@ -623,6 +722,9 @@ import * as THREE from 'three';
                 });
                 editableObjects.set(id, group);
                 if (saved?.renderMode === 'front') setEditorRenderMode(group, 'front');
+                if (saved?.bend && Number.isFinite(saved.bend.angle)) {
+                    applyEditorBend(group, saved.bend.angle, saved.bend.axis);
+                }
                 updateEditableBounds(group);
                 return group;
             }
@@ -1020,20 +1122,33 @@ import * as THREE from 'three';
             const grassCanvas = document.createElement('canvas');
             grassCanvas.width = grassCanvas.height = 256;
             const grassCtx = grassCanvas.getContext('2d');
-            grassCtx.fillStyle = '#748952';
+            grassCtx.fillStyle = '#8d9c68';
             grassCtx.fillRect(0, 0, 256, 256);
             for (let i = 0; i < 16000; i++) {
                 grassCtx.fillStyle = [
-                    '#879758', '#687c45', '#91a164', '#566e3f', '#788d4e'
+                    '#aab482', '#78885b', '#b5bd8a', '#6f8055', '#929f6b'
                 ][Math.floor(rand() * 5)];
                 grassCtx.fillRect(rand() * 256, rand() * 256, 1 + rand() * 3, 1 + rand() * 3);
             }
+            const sceneSeedAfterGrassBase = seed;
+            for (let i = 0; i < 2200; i++) {
+                const x = rand() * 256;
+                const y = rand() * 256;
+                grassCtx.strokeStyle = rand() > .45 ? 'rgba(56,96,43,.24)' : 'rgba(214,228,148,.2)';
+                grassCtx.lineWidth = .45 + rand() * .5;
+                grassCtx.beginPath();
+                grassCtx.moveTo(x, y + 1.8 + rand() * 2.2);
+                grassCtx.quadraticCurveTo(x + rand() * 2 - 1, y + 1, x + rand() * 2.6 - 1.3, y);
+                grassCtx.stroke();
+            }
+            seed = sceneSeedAfterGrassBase;
             const grassMap = new THREE.CanvasTexture(grassCanvas);
             grassMap.colorSpace = THREE.SRGBColorSpace;
             grassMap.wrapS = grassMap.wrapT = THREE.RepeatWrapping;
-            grassMap.repeat.set(35, 35);
+            grassMap.repeat.set(42, 42);
+            grassMap.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
             const grassMat = new THREE.MeshStandardMaterial({
-                map: grassMap, roughness: 1
+                map: grassMap, color: '#c7cba8', roughness: 1
             });
 
             box(scene, 700, .6, 700, 0, -.9, 0, grassMat, false);
@@ -1533,12 +1648,11 @@ import * as THREE from 'three';
 
                 if (facade.sign) {
                     if (id === 'doke1_store') {
-                        // The photographed Store sign is mounted on the long blue wall,
-                        // not centred on the curved end gable, so keep it centred in the
-                        // blue cladding band instead of resting on the gable eave.
+                        // Photo reference: the white TDK board hangs centred on the blue
+                        // cladding, with the flagpole line standing in front of it.
                         const storeSignBand = h * (facade.blueRatio || .42);
-                        tdkSign(group, w / 2 + .34, h - storeSignBand / 2 + .3, d * .18,
-                            Math.min(25, d * .3), 3.7, Math.PI / 2);
+                        tdkSign(group, 0, h - storeSignBand * .46 + .3, d / 2 + .95,
+                            Math.min(21, w * .6), 3.1);
                     } else if (id === 'doke2_assy') {
                         const doke2FacadeSign = sign(group, 'DK  T.D.K. INDUSTRIAL CO., LTD.',
                             0, h + .45 + rise * .45, d / 2 + .9, Math.min(30, w * .78), 2.35,
@@ -1601,6 +1715,10 @@ import * as THREE from 'three';
                 const blueCenterY = storeH - blueHeight / 2 + .3;
                 const frontZ = storeD / 2 + .13;
                 const sideX = storeW / 2 + .13;
+
+                // Thin painted transom where the blue cladding meets the white base.
+                box(details, storeW + .2, .12, .2, 0,
+                    .3 + storeH - blueHeight + .06, frontZ + .04, M.officeWhite, false);
 
                 // The pale front and side bases already come from the wall material, and the
                 // front glazing strip is built by the facade profile above, so this group only
@@ -1760,14 +1878,14 @@ import * as THREE from 'three';
                 }
 
                 const windowRows = isCanteen ? [2.05, 5.55] : [1.65, 4.05];
-                const windowFrameMaterial = isCanteen ? M.officeWhite : M.frame;
+                const windowFrameMaterial = M.frame;
                 for (const yy of windowRows) {
                     for (let xx = -w / 2 + 1.45; xx < w / 2 - 1; xx += 2.55) {
                         for (const side of [-1, 1]) {
                             box(group, 2.15, 1.7, .07, xx, yy, side * (d / 2 + .045), M.glass, false);
                             box(group, .065, 1.7, .10, xx, yy, side * (d / 2 + .10), windowFrameMaterial, false);
                             box(group, 2.3, .1, .15, xx, yy - .9, side * (d / 2 + .1),
-                                windowFrameMaterial, false);
+                                isCanteen ? M.officeWhite : windowFrameMaterial, false);
                         }
                     }
                     for (let zz = -d / 2 + 1.5; zz < d / 2 - 1; zz += 2.65) {
@@ -2010,10 +2128,101 @@ import * as THREE from 'three';
             label('Canteen / DV FL 2 / DIE-SET FL 2', toRender(canteenData.position.x), canteenHeight + canteenRise + 3,
                 toRender(canteenData.position.z), 34);
 
-            // The canteen keeps its layered white facade; blue is reserved for the roof edge.
+            // The canteen keeps its layered white facade; blue stays on the roof edge, the
+            // entrance frame and the downpipes, matching the DIE-SET site photos.
             box(canteen, canteenWidth + 1.25, .32, .48, 0, canteenHeight + .17,
                 canteenDepth / 2 + .2, M.blue);
-            awning(canteen, 0, canteenDepth / 2 + 1.45, canteenWidth * .58, 2.5, 4.45);
+            box(canteen, canteenWidth + 1.15, .14, .6, 0, canteenHeight - .04,
+                canteenDepth / 2 + .14, M.officeWhite, false);
+
+            // DIE-SET elevation from the site photos: the deeply draped balcony over the
+            // ground floor, its dark railing, the SAFETY FIRST board, the R&D Center
+            // entrance, the blue downpipes and the red/white kerb along the yard.
+            function addDieSetFacade() {
+                const details = new THREE.Group();
+                details.name = 'DIE-SET photo facade details';
+                canteen.add(details);
+
+                const frontZ = canteenDepth / 2;
+                const balconyY = 4.62;
+                const balconyDepth = .95;
+                const balconyWidth = canteenWidth - .3;
+                const balconyFrontZ = frontZ + balconyDepth;
+
+                const slab = box(details, balconyWidth, .3, balconyDepth, 0, balconyY,
+                    frontZ + balconyDepth / 2, M.officeWhite);
+                slab.name = 'DIE-SET balcony slab';
+                for (const side of [-1, 1]) {
+                    box(details, .3, .3, 1.2, side * (balconyWidth / 2 - .15), balconyY,
+                        frontZ + .6, M.officeWhite, false);
+                }
+                box(details, balconyWidth, .07, .07, 0, balconyY + 1.02,
+                    balconyFrontZ - .1, M.frame, false);
+                box(details, balconyWidth, .05, .05, 0, balconyY + .58,
+                    balconyFrontZ - .1, M.frame, false);
+                for (let x = -balconyWidth / 2 + .55; x <= balconyWidth / 2 - .55; x += 1.55) {
+                    box(details, .055, .95, .055, x, balconyY + .625,
+                        balconyFrontZ - .1, M.frame, false);
+                }
+
+                // White board with the green cross used across the site. The site photos
+                // hang it on the side elevation between the two window rows, so it is
+                // centred on the +X end wall and faces the internal yard.
+                const board = new THREE.Group();
+                board.name = 'DIE-SET safety first board';
+                board.position.set(canteenWidth / 2 + .12, 3.8, 0);
+                board.rotation.y = Math.PI / 2;
+                details.add(board);
+                const boardCanvas = document.createElement('canvas');
+                boardCanvas.width = 1024;
+                boardCanvas.height = 128;
+                const boardCtx = boardCanvas.getContext('2d');
+                boardCtx.fillStyle = '#ffffff';
+                boardCtx.fillRect(0, 0, 1024, 128);
+                boardCtx.strokeStyle = '#cfd8dd';
+                boardCtx.lineWidth = 6;
+                boardCtx.strokeRect(4, 4, 1016, 120);
+                boardCtx.fillStyle = '#1f9d55';
+                boardCtx.fillRect(44, 26, 24, 76);
+                boardCtx.fillRect(16, 54, 80, 20);
+                boardCtx.fillStyle = '#123b63';
+                boardCtx.font = 'bold 74px Arial,sans-serif';
+                boardCtx.textAlign = 'left';
+                boardCtx.textBaseline = 'middle';
+                boardCtx.fillText('SAFETY FIRST', 124, 68);
+                const boardTexture = new THREE.CanvasTexture(boardCanvas);
+                boardTexture.colorSpace = THREE.SRGBColorSpace;
+                const boardMesh = new THREE.Mesh(
+                    new THREE.PlaneGeometry(8.4, 1.05),
+                    new THREE.MeshBasicMaterial({ map: boardTexture })
+                );
+                board.add(boardMesh);
+
+                // Ground-floor entrance: blue portal, dark double doors, R&D Center sign.
+                const entranceX = canteenWidth * .27;
+                box(details, 3.5, 2.7, .14, entranceX, 1.48, frontZ + .12, M.officeGlassDark);
+                for (const side of [-1, 1]) {
+                    box(details, .18, 2.95, .26, entranceX + side * 1.82, 1.48,
+                        frontZ + .16, M.blue);
+                }
+                box(details, 3.86, .18, .3, entranceX, 2.93, frontZ + .16, M.blue);
+                box(details, .08, 2.7, .18, entranceX, 1.48, frontZ + .2, M.frame, false);
+                const rdSign = sign(details, 'R&D Center', entranceX, 3.32, frontZ + .18, 3.1, .62,
+                    { background: '#ffffff', color: '#1b4d8f', fontSize: 58 });
+                rdSign.name = 'DIE-SET R&D center sign';
+
+                // Red/white kerb and the blue downpipes that frame the elevation.
+                for (let x = -canteenWidth / 2 + .6; x < canteenWidth / 2 - .4; x += 1.15) {
+                    box(details, 1.0, .34, .42, x, .17, frontZ + .3,
+                        Math.round(x / 1.15 + 40) % 2 ? M.red : M.white, false);
+                }
+                for (const side of [-1, 1]) {
+                    cyl(details, .09, .09, canteenHeight - .55,
+                        side * (canteenWidth / 2 - .35), (canteenHeight - .55) / 2 + .2,
+                        frontZ + .16, M.blue, 8);
+                }
+                return details;
+            }
 
             // Small service buildings.
             box(scene, 7, 3.1, 8, -72, 1.55, -2, M.wall);
@@ -2145,22 +2354,93 @@ import * as THREE from 'three';
                 return roof;
             }
 
-            function speedLimitSign(x, z, rotationY = 0) {
+            const animatedEntranceSpeedSigns = [];
+            let entranceSpeedSignTime = 0;
+
+            function speedLimitSign(x, z, rotationY = 0, parent = scene) {
                 const group = new THREE.Group();
+                group.name = 'Entrance avenue speed limit 20 kmh';
                 group.position.set(x, 0, z);
                 group.rotation.y = rotationY;
-                scene.add(group);
-                cyl(group, .07, .09, 3.6, 0, 1.8, 0, M.dark, 10);
+                parent.add(group);
+                const galvanized = material('#7d898d', .34, .7);
+                const signHousing = material('#eef0ed', .74, .12);
+                cyl(group, .075, .095, 4.15, 0, 2.075, 0, galvanized, 12);
+                const cabinet = box(group, 2.35, 2.55, .22, 0, 4.28, 0, signHousing);
+                cabinet.name = 'Entrance speed sign white cabinet';
+
+                // Solar cap and the two red warning lamps mirror the roadside speed display
+                // in the entrance reference. The lamps flash in the normal render loop.
+                const solarPanel = box(group, 1.55, .09, .72, 0, 5.78, -.04, M.glassBlue);
+                solarPanel.name = 'Entrance speed sign solar panel';
+                solarPanel.rotation.x = -.2;
+                box(group, .16, .42, .16, 0, 5.52, 0, galvanized);
                 const canvas = document.createElement('canvas');
                 canvas.width = canvas.height = 256;
                 const ctx = canvas.getContext('2d');
                 ctx.fillStyle = '#f7f7f2'; ctx.beginPath(); ctx.arc(128, 128, 112, 0, Math.PI * 2); ctx.fill();
-                ctx.strokeStyle = '#b43b39'; ctx.lineWidth = 18; ctx.stroke();
-                ctx.fillStyle = '#172c38'; ctx.font = '900 92px Arial'; ctx.textAlign = 'center'; ctx.fillText('20', 128, 135);
-                ctx.font = 'bold 28px Tahoma'; ctx.fillText('กม./ชม.', 128, 178);
+                ctx.strokeStyle = '#d01920'; ctx.lineWidth = 18; ctx.stroke();
+                ctx.fillStyle = '#d01920'; ctx.font = '900 112px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillText('20', 128, 137);
                 const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
-                const face = new THREE.Mesh(new THREE.CircleGeometry(.92, 40), new THREE.MeshBasicMaterial({ map: texture }));
-                face.position.set(0, 3.4, .04); group.add(face);
+                const face = new THREE.Mesh(new THREE.CircleGeometry(.82, 48), new THREE.MeshBasicMaterial({ map: texture }));
+                face.name = 'Entrance speed limit 20 face';
+                face.position.set(0, 4.26, .125); group.add(face);
+
+                const lamps = [];
+                const halos = [];
+                const lights = [];
+                for (const side of [-1, 1]) {
+                    const lampMaterial = new THREE.MeshStandardMaterial({
+                        color: '#ff3b31', emissive: '#ff160d', emissiveIntensity: 4.8,
+                        roughness: .18, metalness: .05, toneMapped: false
+                    });
+                    const lamp = new THREE.Mesh(new THREE.SphereGeometry(.18, 18, 12), lampMaterial);
+                    lamp.name = `Entrance speed sign red beacon ${side < 0 ? 'left' : 'right'}`;
+                    lamp.position.set(side * .78, 5.28, .2);
+                    group.add(lamp);
+                    const haloMaterial = new THREE.MeshBasicMaterial({
+                        color: '#ff2d24', transparent: true, opacity: .58,
+                        blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
+                    });
+                    const halo = new THREE.Mesh(new THREE.CircleGeometry(.37, 24), haloMaterial);
+                    halo.name = `${lamp.name} halo`;
+                    halo.position.set(side * .78, 5.28, .34);
+                    group.add(halo);
+                    const warningLight = new THREE.PointLight('#ff291f', 2.4, 4.8, 2);
+                    warningLight.name = `${lamp.name} light`;
+                    warningLight.position.set(side * .78, 5.28, .58);
+                    warningLight.castShadow = false;
+                    group.add(warningLight);
+                    lamps.push(lamp); halos.push(halo); lights.push(warningLight);
+                }
+                const slowBoard = box(group, 2.15, .5, .16, 0, 3.18, .01, material('#efdd72', .78, .04), false);
+                slowBoard.name = 'Entrance speed sign slow board';
+                sign(group, 'ลดความเร็ว', 0, 3.18, .101, 1.95, .36, {
+                    background: '#efdd72', color: '#263136', fontSize: 48
+                });
+                group.userData.speedLimitBeacon = { lamps, halos, lights, isOn: true };
+                animatedEntranceSpeedSigns.push(group);
+                return group;
+            }
+
+            function updateEntranceSpeedSigns(dt) {
+                entranceSpeedSignTime += Math.max(0, Number(dt) || 0);
+                const isOn = Math.floor(entranceSpeedSignTime * 2.5) % 2 === 0;
+                animatedEntranceSpeedSigns.forEach(group => {
+                    const beacon = group.userData.speedLimitBeacon;
+                    if (!beacon) return;
+                    beacon.isOn = isOn;
+                    beacon.lamps.forEach(lamp => {
+                        lamp.material.color.set(isOn ? '#ff3b31' : '#6d0d0a');
+                        lamp.material.emissiveIntensity = isOn ? 4.8 : .08;
+                    });
+                    beacon.halos.forEach(halo => {
+                        halo.material.opacity = isOn ? .58 : .035;
+                        halo.scale.setScalar(isOn ? 1.12 : .78);
+                    });
+                    beacon.lights.forEach(light => { light.intensity = isOn ? 2.4 : 0; });
+                });
             }
 
             function trafficLight(x, z) {
@@ -2266,20 +2546,33 @@ import * as THREE from 'three';
                 box(barrier, .78, .16, .82, 0, .08, 0, M.dark);
                 box(barrier, .66, 1.42, .7, 0, .82, 0, barrierOrange);
                 box(barrier, .74, .16, .76, 0, 1.55, 0, M.dark);
-                cyl(barrier, .12, .12, .2, 0, 1.73, 0, M.yellow, 12);
+                // The beacon reuses the existing cap cylinder so the barrier keeps exactly the
+                // mesh count and bounds recorded in the locked layout.
+                const warningMaterial = new THREE.MeshStandardMaterial({
+                    color: '#f4c53c', emissive: '#ff4d00', emissiveIntensity: 0,
+                    roughness: .35, toneMapped: false
+                });
+                const warningLight = cyl(barrier, .12, .12, .2, 0, 1.73, 0, warningMaterial, 12);
 
                 const armLength = 9.9;
-                box(barrier, armLength, .15, .18,
-                    direction * armLength / 2, 1.54, 0, M.white);
+                const armPivot = new THREE.Group();
+                armPivot.name = `${barrier.name} moving arm`;
+                armPivot.position.set(0, 1.54, 0);
+                barrier.add(armPivot);
+                box(armPivot, armLength, .15, .18,
+                    direction * armLength / 2, 0, 0, M.white);
                 for (let offset = .35; offset < armLength - .2; offset += 1.38) {
-                    box(barrier, .62, .17, .2,
-                        direction * (offset + .31), 1.54, 0, M.red, false);
+                    box(armPivot, .62, .17, .2,
+                        direction * (offset + .31), 0, 0, M.red, false);
                 }
                 cyl(barrier, .2, .2, .24, direction * .08, 1.54, 0, M.frame, 12);
+                barrier.userData.activityBarrier = {
+                    armPivot, warningLight, direction, openness: 0, requestedOpen: false
+                };
                 return barrier;
             }
-            boomBarrier(-28.4, 74.2, 1);
-            boomBarrier(-8.6, 74.2, -1);
+            const entryBoomBarrier = boomBarrier(-28.4, 74.2, 1);
+            const exitBoomBarrier = boomBarrier(-8.6, 74.2, -1);
             const utilityLine = [48, 18, -12, -42];
             const rightBoundaryX = 80;
             utilityLine.forEach(z => utilityPole(rightBoundaryX, z));
@@ -2466,6 +2759,90 @@ import * as THREE from 'three';
                 return group;
             }
 
+            function createEntranceBoundaryWall() {
+                const group = new THREE.Group();
+                group.name = 'Entrance avenue boundary wall';
+                group.position.set(-62.5, 0, 88.25);
+                group.rotation.y = .1846;
+                scene.add(group);
+
+                const entranceWallWhite = material('#f0f1ed', .88, .04);
+                const entranceWallCap = material('#fafbf8', .7, .06);
+                const entranceGateBlue = material('#0871c5', .46, .28);
+                const entranceGateBlueDark = material('#07569a', .42, .34);
+                const wallZ = -7.85;
+                // Keep the existing vehicle opening and add a second opening near the
+                // entrance monument. Both remain open like the supplied gate reference.
+                const accessOpenings = [
+                    { start: -31, end: -17, id: 2 },
+                    { start: 18, end: 32, id: 1 }
+                ];
+                const wallSpans = [];
+                let wallStart = -40.5;
+                accessOpenings.forEach(opening => {
+                    wallSpans.push([wallStart, opening.start]);
+                    wallStart = opening.end;
+                });
+                wallSpans.push([wallStart, 40.5]);
+                for (const [start, end] of wallSpans) {
+                    const length = end - start;
+                    const center = (start + end) / 2;
+                    const wall = box(group, length, 3.05, .58, center, 1.525, wallZ, entranceWallWhite);
+                    wall.name = 'Entrance avenue white wall segment';
+                    const plinth = box(group, length + .02, .18, .64, center, .09, wallZ, M.dark, false);
+                    plinth.name = 'Entrance avenue wall dark plinth';
+                    const cap = box(group, length + .12, .16, .72, center, 3.13, wallZ, entranceWallCap);
+                    cap.name = 'Entrance avenue white wall cap';
+                }
+                // The reference gate is open, with the blue sliding leaves parked against
+                // the white wall on both sides. Slats and diagonal braces keep it readable
+                // from the aerial camera without closing the vehicle opening.
+                const slidingGate = (x, width, braceDirection, accessId, side) => {
+                    const gate = new THREE.Group();
+                    gate.name = `Entrance avenue access ${accessId} open blue sliding gate ${side}`;
+                    gate.position.set(x, 0, wallZ + .43);
+                    group.add(gate);
+                    box(gate, width, .16, .16, 0, 2.88, 0, entranceGateBlueDark);
+                    box(gate, width, .16, .16, 0, .42, 0, entranceGateBlueDark);
+                    box(gate, .18, 2.62, .18, -width / 2 + .1, 1.65, 0, entranceGateBlueDark);
+                    box(gate, .18, 2.62, .18, width / 2 - .1, 1.65, 0, entranceGateBlueDark);
+                    for (let gx = -width / 2 + .34; gx < width / 2 - .2; gx += .36) {
+                        box(gate, .065, 2.32, .075, gx, 1.65, .02, entranceGateBlue, false);
+                    }
+                    const brace = beam(gate,
+                        [-width / 2 + .18, braceDirection < 0 ? 2.82 : .48, .12],
+                        [width / 2 - .18, braceDirection < 0 ? .48 : 2.82, .12],
+                        .075, entranceGateBlueDark);
+                    brace.name = 'Entrance avenue sliding gate diagonal brace';
+                    for (const wheelX of [-width / 2 + .55, width / 2 - .55]) {
+                        const wheel = cyl(gate, .16, .16, .12, wheelX, .19, 0, M.rubber, 12);
+                        wheel.rotation.z = Math.PI / 2;
+                    }
+                    return gate;
+                };
+
+                accessOpenings.forEach(({ start, end, id }) => {
+                    for (const x of [start, end]) {
+                        const pillar = box(group, 1.18, 3.72, .92, x, 1.86, wallZ, entranceWallWhite);
+                        pillar.name = `Entrance avenue access ${id} pillar`;
+                        box(group, 1.38, .2, 1.1, x, 3.82, wallZ, entranceWallCap)
+                            .name = `Entrance avenue access ${id} pillar cap`;
+                    }
+                    slidingGate(start - 4.15, 7.7, 1, id, 'left');
+                    slidingGate(end + 3.95, 7.25, -1, id, 'right');
+                    const accessApron = box(group, end - start, .08, 7.4,
+                        (start + end) / 2, .055, wallZ - 3.55, M.concreteDark, false);
+                    accessApron.name = `Entrance avenue wall access opening ${id}`;
+                    speedLimitSign(start + 1.35, wallZ + 1.15, 0, group);
+                });
+
+                group.userData.info = {
+                    title: 'กำแพงและช่องทางเข้าถนนโรงงาน',
+                    description: 'กำแพงคอนกรีตแยกอิสระ พร้อมช่องทางเข้า 2 ช่องและประตูบานเลื่อนสีน้ำเงินแบบเปิด'
+                };
+                return group;
+            }
+
             function createEntranceAvenue() {
                 const group = new THREE.Group();
                 group.name = 'Landscaped entrance avenue';
@@ -2474,7 +2851,8 @@ import * as THREE from 'three';
                 scene.add(group);
 
                 const avenueGreen = material('#6f994c', .96, .02);
-                box(group, 81, .1, 3.8, 0, .02, -8.15, avenueGreen, false);
+                // The left planting strip was replaced by the separately editable wall.
+                // The right strip remains the dedicated landscaped avenue object.
                 box(group, 81, .1, 3.8, 0, .02, 8.15, avenueGreen, false);
 
                 const addInstances = (name, geometry, instanceMaterial, transforms, castShadow = true) => {
@@ -2499,10 +2877,8 @@ import * as THREE from 'three';
                 const whiteCurbs = [];
                 let curbIndex = 0;
                 for (let x = -39.2; x <= 36; x += 2.2) {
-                    for (const z of [-6.35, 6.35]) {
-                        const entry = { position: [x, .14, z] };
-                        (curbIndex % 2 ? whiteCurbs : redCurbs).push(entry);
-                    }
+                    const entry = { position: [x, .14, 6.35] };
+                    (curbIndex % 2 ? whiteCurbs : redCurbs).push(entry);
                     curbIndex++;
                 }
                 const curbGeometry = new THREE.BoxGeometry(2.16, .28, .34);
@@ -2511,13 +2887,12 @@ import * as THREE from 'three';
 
                 const hedges = [];
                 for (let x = -37; x <= 31; x += 4.25) {
-                    for (const z of [-8.05, 8.05]) {
-                        const variation = 1 + ((Math.round(x * 10) + Math.round(z)) % 3) * .08;
-                        hedges.push({
-                            position: [x, .58, z],
-                            scale: [1.5 * variation, .58, .78]
-                        });
-                    }
+                    const z = 8.05;
+                    const variation = 1 + ((Math.round(x * 10) + Math.round(z)) % 3) * .08;
+                    hedges.push({
+                        position: [x, .58, z],
+                        scale: [1.5 * variation, .58, .78]
+                    });
                 }
                 addInstances('Entrance avenue hedges',
                     new THREE.SphereGeometry(1, 10, 7), M.foliage[1], hedges);
@@ -2525,13 +2900,12 @@ import * as THREE from 'three';
                 const trunks = [];
                 const crowns = [];
                 for (let x = -34; x <= 25; x += 11.8) {
-                    for (const z of [-9.55, 9.55]) {
-                        trunks.push({ position: [x, 1.5, z] });
-                        crowns.push({
-                            position: [x, 4.05, z],
-                            scale: [1.28, 1.72, 1.28]
-                        });
-                    }
+                    const z = 9.55;
+                    trunks.push({ position: [x, 1.5, z] });
+                    crowns.push({
+                        position: [x, 4.05, z],
+                        scale: [1.28, 1.72, 1.28]
+                    });
                 }
                 addInstances('Entrance avenue tree trunks',
                     new THREE.CylinderGeometry(.15, .22, 3, 8), M.trunk, trunks);
@@ -2597,6 +2971,11 @@ import * as THREE from 'three';
             const movingVehicles = [];
             let activityEnabled = true;
             let activityTime = 0;
+            let activityRandomSeed = 90421;
+            function activityRand() {
+                activityRandomSeed = (activityRandomSeed * 1664525 + 1013904223) >>> 0;
+                return activityRandomSeed / 4294967296;
+            }
             let activityObstacles = [];
             let activityObstacleSignature = '';
             let plannedObstacleRevision = -1;
@@ -2629,6 +3008,44 @@ import * as THREE from 'three';
                 ctx.fillStyle = amount > .5 ? '#38c172' : amount > .25 ? '#f5bd3d' : '#df4b4b';
                 ctx.fillRect(4, 6, 120 * amount, 12);
                 group.userData.healthTexture.needsUpdate = true;
+            }
+
+            function addActivityRoleBadge(actor, label, color = '#155aa8', height = 4.95) {
+                const canvas = document.createElement('canvas');
+                canvas.width = 384; canvas.height = 72;
+                const texture = new THREE.CanvasTexture(canvas);
+                texture.colorSpace = THREE.SRGBColorSpace;
+                const badge = new THREE.Sprite(new THREE.SpriteMaterial({
+                    map: texture, depthTest: false, transparent: true
+                }));
+                badge.position.set(0, height, 0);
+                badge.scale.set(5.4, 1.02, 1);
+                actor.mesh.add(badge);
+                actor.roleLabel = label;
+                actor.roleColor = color;
+                actor.status ||= 'กำลังปฏิบัติงาน';
+                actor.mesh.userData.activityActor = actor;
+                actor.mesh.userData.activityRole = label;
+                actor.roleBadge = { canvas, texture, badge, lastText: '' };
+                updateActivityRoleBadge(actor);
+            }
+
+            function updateActivityRoleBadge(actor) {
+                const data = actor.roleBadge;
+                if (!data) return;
+                const text = `${actor.roleLabel} · ${actor.status}`;
+                if (text === data.lastText) return;
+                data.lastText = text;
+                const ctx = data.canvas.getContext('2d');
+                ctx.clearRect(0, 0, data.canvas.width, data.canvas.height);
+                ctx.fillStyle = '#ffffffee';
+                ctx.beginPath(); ctx.roundRect(2, 2, 380, 68, 22); ctx.fill();
+                ctx.strokeStyle = actor.roleColor; ctx.lineWidth = 5; ctx.stroke();
+                ctx.fillStyle = actor.roleColor;
+                ctx.font = '700 27px sans-serif';
+                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillText(text, 192, 37, 350);
+                data.texture.needsUpdate = true;
             }
 
             function route(points, closed = true) {
@@ -2696,18 +3113,57 @@ import * as THREE from 'three';
                 return group;
             }
 
+            // Workers split from the entrance toward their assigned workplace. Each route
+            // reaches one building frontage, pauses for a shift hand-off and returns along
+            // a slightly different line so the yard reads as a working campus.
             const workerRoutes = [
-                route([[-17, 8], [3, 9], [26, 10], [55, 9], [61, 17], [49, 17], [19, 16]]),
-                route([[-64, 54], [-52, 52], [-37, 51], [-34, 31], [-40, 20], [-60, 22]])
+                route([[1, 88], [-2, 82], [-8, 76], [-15, 72], [-20, 77], [-12, 84], [-5, 89]]),
+                route([[10, 88], [8, 78], [4, 70], [-4, 65], [-12, 61], [-15, 57],
+                    [-10, 54], [-3, 59], [4, 70]]),
+                route([[10, 88], [7, 72], [1, 56], [-8, 40], [-20, 24], [-32, 8],
+                    [-42, -7], [-45, -14], [-38, -16], [-29, 0], [-16, 20], [-2, 48]]),
+                route([[11, 88], [10, 72], [9, 54], [8, 36], [7, 18], [6, 2],
+                    [5, -10], [1, -14], [-2, -8], [1, 8], [4, 28], [7, 50]]),
+                route([[12, 88], [14, 72], [17, 56], [22, 40], [28, 26], [34, 14],
+                    [40, 8], [43, 12], [36, 20], [28, 32], [20, 48]]),
+                route([[12, 88], [17, 78], [23, 69], [31, 62], [38, 57], [42, 53],
+                    [38, 49], [31, 53], [24, 62], [18, 72]]),
+                route([[8, 88], [3, 76], [-5, 64], [-15, 52], [-26, 40], [-36, 31],
+                    [-44, 25], [-47, 20], [-41, 16], [-33, 24], [-22, 36], [-10, 52]])
             ];
+            const workerRoles = [
+                { role: 'security', workplace: 'gate', label: 'รปภ.', color: '#133d75', route: 0,
+                    stop: { x: -15, z: 72, status: 'ประจำจุดรักษาการณ์' } },
+                { role: 'office-staff', workplace: 'main-office', label: 'Main Office', color: '#12679a', route: 1,
+                    stop: { x: -15.5, z: 46, status: 'เข้าทำงาน Main Office' } },
+                { role: 'doke1-worker', workplace: 'doke1-west', label: 'Doke 1', color: '#247244', route: 2,
+                    stop: { x: -34, z: -14, status: 'เข้าทำงาน Doke 1' } },
+                { role: 'store-worker', workplace: 'doke1-store', label: 'Store', color: '#75529a', route: 3,
+                    stop: { x: 18.7, z: -10.5, status: 'เข้าทำงาน Store' } },
+                { role: 'doke2-worker', workplace: 'doke2-assy', label: 'Doke 2', color: '#b35a31', route: 4,
+                    stop: { x: 23, z: 9.7, status: 'เข้าทำงาน Doke 2' } },
+                { role: 'rack-worker', workplace: 'rack-dome', label: 'Rack Dome', color: '#9a6a00', route: 5,
+                    stop: { x: 24, z: 51, status: 'เข้าทำงาน Rack Dome' } },
+                { role: 'canteen-worker', workplace: 'canteen', label: 'Canteen', color: '#267b73', route: 6,
+                    stop: { x: -35.1, z: 21.8, status: 'เข้าทำงาน Canteen' } }
+            ];
+            const workerAssignments = [0, 1, 1, 2, 2, 3, 3, 4, 5, 6];
             for (let i = 0; i < 10; i++) {
+                const role = workerRoles[workerAssignments[i]];
                 const actor = {
                     mesh: worker(['#1677a8', '#287b55', '#d7633f', '#7652a4'][i % 4], i % 3 ? '#f6f7f0' : '#f4d34a'),
-                    curve: workerRoutes[i % workerRoutes.length], phase: (i * .147) % 1, speed: .018 + (i % 3) * .003,
+                    curve: workerRoutes[role.route], phase: (i * .147) % 1, speed: .018 + (i % 3) * .003,
                     clearance: .65,
-                    dead: false
+                    dead: false,
+                    role: role.role,
+                    workplace: role.workplace,
+                    movingStatus: `เดินไป ${role.label}`,
+                    serviceStops: [{ ...role.stop, radius: 3.1, duration: 3.2 + (i % 3) }],
+                    visitedStops: new Set(),
+                    waitRemaining: 0
                 };
                 actor.mesh.userData.actor = actor;
+                addActivityRoleBadge(actor, role.label, role.color);
                 workers.push(actor);
             }
 
@@ -2715,14 +3171,35 @@ import * as THREE from 'three';
                 route([[64, -74], [66, -48], [66, -14], [64, 8], [67, 29], [68, 63], [63, 70], [61, 25]]),
                 route([[-17, 8], [5, 8], [27, 9], [54, 9], [59, 4], [34, 4], [8, 4], [-14, 4]])
             ];
-            for (let i = 0; i < 2; i++) movingForklifts.push({
-                mesh: forklift(i ? '#ef9d2d' : '#efbd32'), curve: forkliftRoutes[i],
-                phase: i * .47, speed: i ? .010 : .008, clearance: 3.2
-            });
+            for (let i = 0; i < 2; i++) {
+                const actor = {
+                    mesh: forklift(i ? '#ef9d2d' : '#efbd32'), curve: forkliftRoutes[i],
+                    phase: i * .47, speed: i ? .010 : .008, clearance: 3.2,
+                    role: 'forklift-operator', status: 'ขนย้ายพาเลต',
+                    serviceStops: i ? [
+                        { x: 55, z: 9, radius: 4, duration: 2.2, status: 'รับพาเลต', carrying: true },
+                        { x: -12, z: 6, radius: 4, duration: 2.2, status: 'วางพาเลต', carrying: false }
+                    ] : [
+                        { x: 66, z: -45, radius: 4, duration: 2.2, status: 'รับพาเลต', carrying: true },
+                        { x: 66, z: 60, radius: 4, duration: 2.2, status: 'วางพาเลต', carrying: false }
+                    ],
+                    visitedStops: new Set(), waitRemaining: 0, carrying: false
+                };
+                if (i === 0) addActivityRoleBadge(actor, 'รถยก / โลจิสติกส์', '#9a5b00', 4.65);
+                movingForklifts.push(actor);
+            }
 
+            // Cars arrive from the public approach, pass the entry boom, pause in front
+            // of the company and leave through the opposing boom lane.
             const vehicleRoutes = [
-                route([[-24, 74], [-22, 60], [-20, 39], [-17, 19], [3, 11], [31, 11], [55, 13], [64, 26], [65, 57], [49, 71], [10, 73]]),
-                route([[-7, 70], [-6, 53], [-5, 31], [1, 18], [24, 15], [48, 16], [61, 27], [62, 55], [44, 67], [15, 69]])
+                route([[7.2, 122], [7.2, 108], [7.4, 99], [7.5, 92], [7.4, 82],
+                    [7.2, 70], [7, 58], [8, 50], [11, 44], [15, 44], [17, 50],
+                    [17.4, 60], [17.5, 72], [17.5, 84], [17.5, 93], [17.5, 104],
+                    [17, 115], [13, 122]]),
+                route([[8.8, 126], [8.6, 110], [8.6, 100], [8.5, 92], [8.4, 80],
+                    [8.2, 68], [8, 56], [9, 49], [12, 45], [15.5, 46], [16.2, 54],
+                    [16.4, 66], [16.3, 78], [16.2, 88], [16.2, 96], [16.3, 108],
+                    [16, 119], [13, 126]])
             ];
             const presentationCars = [
                 car(scene, 0, 0, '#f4f5f3', 0, false),
@@ -2736,12 +3213,23 @@ import * as THREE from 'three';
                 movingVehicles.push({
                     mesh,
                     curve: vehicleRoutes[index % vehicleRoutes.length],
-                    phase: [0.08, .42, .72][index],
-                    speed: [.014, .012, .013][index],
+                    phase: [0.08, .42, .72][index] + (activityRand() - .5) * .06,
+                    speed: .0105 + activityRand() * .005,
                     rideHeight: .25,
                     clearance: 2.6,
                     wheelSpeed: 8,
-                    headlight
+                    headlight,
+                    role: index === 0 ? 'visitor-car' : 'staff-car',
+                    status: index === 0 ? 'รถผู้มาติดต่อ' : 'รถพนักงาน',
+                    serviceStops: [{
+                        x: index % 2 ? 12 : 11,
+                        z: index % 2 ? 45 : 44,
+                        radius: 2.8,
+                        duration: 2.4,
+                        status: 'จอดรับ-ส่งหน้าบริษัท'
+                    }],
+                    randomArrival: { minDelay: 5 + index * 2, maxDelay: 14 + index * 4 },
+                    visitedStops: new Set(), waitRemaining: 0
                 });
             });
 
@@ -2749,16 +3237,32 @@ import * as THREE from 'three';
             const truckHeadlight = new THREE.PointLight('#e7f5ff', 0, 22, 2);
             truckHeadlight.position.set(0, 2.1, 5.8);
             movingTruck.add(truckHeadlight);
-            movingVehicles.push({
+            // The delivery lorry follows one scripted run instead of a random loop: it
+            // arrives along the public approach, waits at the relocated entry boom, passes
+            // the company frontage, unloads and leaves through the opposing exit lane.
+            const deliveryPath = [
+                [7.7, 126], [7.7, 110], [7.7, 101], [7.7, 96], [7.7, 88],
+                [7.7, 78], [7.4, 68], [7.2, 58], [8, 50], [10, 42], [12, 34],
+                [12, 26], [15, 18], [18, 10], [19, 2], [19, -8], [19.4, -18],
+                [20.8, -26], [20.8, -10], [20.4, 2], [18, 10], [16, 20], [15, 30],
+                [15.5, 42], [16.5, 54], [17.5, 66], [17.5, 78], [17.5, 85], [17.5, 94],
+                [17.5, 106], [17, 116], [13, 122]
+            ];
+            const deliveryRun = {
                 mesh: movingTruck,
-                curve: route([[68, 69], [69, 48], [69, 20], [68, -12], [67, -48], [62, -69], [58, -42], [59, 3], [62, 43]]),
-                phase: .31,
-                speed: .0065,
-                rideHeight: 0,
-                clearance: 4.2,
-                wheelSpeed: 5,
-                headlight: truckHeadlight
-            });
+                path: deliveryPath,
+                index: 2,
+                speed: 7.4,
+                wait: 0,
+                phase: 'approach',
+                status: 'เข้าพื้นที่โรงงาน',
+                entryOpen: false,
+                exitOpen: false
+            };
+            movingTruck.position.set(deliveryPath[0][0], 0, deliveryPath[0][1]);
+            movingTruck.rotation.y = 0;
+            const deliveryBadge = { mesh: movingTruck, phase: 0, status: deliveryRun.status };
+            addActivityRoleBadge(deliveryBadge, 'รถบรรทุกส่งสินค้า', '#0b4c9b', 6.25);
 
             function refreshActivityNavigation() {
                 const obstacles = [];
@@ -2824,7 +3328,12 @@ import * as THREE from 'three';
             }
 
             function placeActivityActor(actor, dt) {
-                if (!actor.navLoop || !actor.mesh.visible) return;
+                if (!actor.navLoop || !actor.mesh.visible) return false;
+                if (actor.waitRemaining > 0) {
+                    actor.waitRemaining = Math.max(0, actor.waitRemaining - dt);
+                    updateActivityRoleBadge(actor);
+                    return false;
+                }
                 const loop = actor.navLoop;
                 const nextDistance = (actor.navDistance + dt * actor.speed * actor.curve.getLength()) % loop.total;
                 const next = positionOnActivityLoop(loop, nextDistance / loop.total);
@@ -2834,14 +3343,142 @@ import * as THREE from 'three';
                     next.z >= box.minZ - actor.clearance && next.z <= box.maxZ + actor.clearance);
                 if (blocked) {
                     plannedObstacleRevision = -1;
-                    return;
+                    return false;
+                }
+                const wrapped = dt > 0 && nextDistance < actor.navDistance;
+                if (wrapped) {
+                    actor.visitedStops?.clear();
+                    if (actor.randomArrival) {
+                        actor.waitRemaining = THREE.MathUtils.lerp(
+                            actor.randomArrival.minDelay,
+                            actor.randomArrival.maxDelay,
+                            activityRand()
+                        );
+                        actor.status = 'รอรอบเข้าพื้นที่';
+                        updateActivityRoleBadge(actor);
+                    }
                 }
                 actor.navDistance = nextDistance;
                 actor.mesh.position.set(next.x, actor.rideHeight || 0, next.z);
                 actor.mesh.rotation.y = next.heading;
+                if (wrapped && actor.randomArrival) return false;
+                const stop = actor.serviceStops?.find(item =>
+                    !actor.visitedStops?.has(item) && Math.hypot(next.x - item.x, next.z - item.z) <= item.radius);
+                if (stop) {
+                    actor.visitedStops?.add(stop);
+                    actor.waitRemaining = stop.duration;
+                    actor.status = stop.status;
+                    if (typeof stop.carrying === 'boolean') actor.carrying = stop.carrying;
+                    updateActivityRoleBadge(actor);
+                    return false;
+                }
+                if (actor.role === 'delivery-truck') {
+                    if (actor.visitedStops?.size >= 2) actor.status = 'เดินทางกลับทางออก';
+                    else if (actor.visitedStops?.size >= 1) actor.status = 'เดินทางไปจุดขนถ่าย';
+                    else actor.status = 'เข้าพื้นที่โรงงาน';
+                } else if (actor.role === 'forklift-operator') {
+                    actor.status = actor.carrying ? 'นำส่งพาเลต' : 'ไปรับพาเลต';
+                } else if (actor.movingStatus) actor.status = actor.movingStatus;
+                else if (actor.role === 'visitor') actor.status = 'เดินตามจุดติดต่อ';
+                else if (actor.role === 'security') actor.status = 'ลาดตระเวนประตู';
+                updateActivityRoleBadge(actor);
+                return true;
+            }
+
+            function updateBoomBarrier(barrier, requestedOpen, dt) {
+                const state = barrier.userData.activityBarrier;
+                state.requestedOpen = requestedOpen;
+                const target = requestedOpen ? 1 : 0;
+                const step = Math.min(Math.max(dt, 0) * .82, 1);
+                state.openness += THREE.MathUtils.clamp(target - state.openness, -step, step);
+                state.armPivot.rotation.z = state.direction * state.openness * Math.PI * .48;
+                const moving = Math.abs(target - state.openness) > .01;
+                state.warningLight.material.emissiveIntensity = moving
+                    ? 1.8 + Math.sin(activityTime * 12) * 1.2
+                    : requestedOpen ? .7 : .15;
+            }
+
+            function setDeliveryStatus(status) {
+                if (deliveryRun.status === status) return;
+                deliveryRun.status = status;
+                deliveryBadge.status = status;
+                updateActivityRoleBadge(deliveryBadge);
+            }
+
+            function updateDeliveryRun(dt) {
+                const run = deliveryRun;
+                const truck = run.mesh;
+                const position = truck.position;
+                if (run.wait > 0) {
+                    run.wait = Math.max(0, run.wait - dt);
+                    return;
+                }
+                const target = run.path[run.index];
+                const dx = target[0] - position.x;
+                const dz = target[1] - position.z;
+                const distance = Math.hypot(dx, dz);
+                if (distance > .02) {
+                    const step = Math.min(run.speed * dt, distance);
+                    position.x += dx / distance * step;
+                    position.z += dz / distance * step;
+                    truck.rotation.y = Math.atan2(dx, dz);
+                    truck.userData.wheels.forEach(wheel => { wheel.rotation.x -= dt * 5; });
+                    if (step >= distance - 1e-6) run.index = (run.index + 1) % run.path.length;
+                } else {
+                    run.index = (run.index + 1) % run.path.length;
+                }
+
+                const atEntry = Math.hypot(position.x - 7.7, position.z - 101) < 3.4;
+                const atDock = Math.hypot(position.x - 19.4, position.z + 18) < 3.6;
+                const atExit = Math.hypot(position.x - 17.5, position.z - 85) < 3.6;
+
+                if (run.phase === 'approach' && atEntry) {
+                    run.phase = 'inspect';
+                    run.wait = 4.5;
+                    run.entryOpen = false;
+                    setDeliveryStatus('รอตรวจเอกสาร · ไม้กั้นปิด');
+                } else if (run.phase === 'inspect') {
+                    run.phase = 'enter';
+                    run.entryOpen = true;
+                    setDeliveryStatus('ไม้กั้นเปิด · เข้าพื้นที่');
+                } else if (run.phase === 'enter' && atDock) {
+                    run.phase = 'unload';
+                    run.wait = 8;
+                    setDeliveryStatus('ขนถ่ายสินค้า');
+                } else if (run.phase === 'enter' && position.z < 62) {
+                    run.entryOpen = false;
+                    setDeliveryStatus('เดินทางไปจุดขนถ่าย');
+                } else if (run.phase === 'unload') {
+                    run.phase = 'leave';
+                    setDeliveryStatus('เดินทางกลับทางออก');
+                } else if (run.phase === 'leave' && atExit) {
+                    run.phase = 'exit-check';
+                    run.wait = 2.2;
+                    run.exitOpen = true;
+                    setDeliveryStatus('ตรวจรถขาออก · ไม้กั้นเปิด');
+                } else if (run.phase === 'exit-check') {
+                    run.phase = 'depart';
+                    setDeliveryStatus('ออกนอกพื้นที่');
+                } else if (run.phase === 'depart' && position.z > 106) {
+                    run.exitOpen = false;
+                    run.phase = 'approach';
+                    setDeliveryStatus('เข้าพื้นที่โรงงาน');
+                }
+            }
+
+            function updateEntranceTrafficControl(dt) {
+                const carAtEntry = movingVehicles.some(actor =>
+                    actor.mesh.position.x >= 2.5 && actor.mesh.position.x <= 12.7 &&
+                    actor.mesh.position.z >= 85 && actor.mesh.position.z <= 104);
+                const carAtExit = movingVehicles.some(actor =>
+                    actor.mesh.position.x >= 12.5 && actor.mesh.position.x <= 22.7 &&
+                    actor.mesh.position.z >= 84 && actor.mesh.position.z <= 104);
+                updateBoomBarrier(entryBoomBarrier, deliveryRun.entryOpen || carAtEntry, dt);
+                updateBoomBarrier(exitBoomBarrier, deliveryRun.exitOpen || carAtExit, dt);
             }
 
             function updateActivity(dt) {
+                updateEntranceSpeedSigns(dt);
                 if (!activityEnabled) return;
                 activityTime += dt;
                 if (activityObstacleRevision !== plannedObstacleRevision) {
@@ -2849,26 +3486,36 @@ import * as THREE from 'three';
                 }
                 workers.forEach((actor, index) => {
                     if (actor.dead) return;
-                    placeActivityActor(actor, dt);
+                    const moving = placeActivityActor(actor, dt);
                     const step = Math.sin(activityTime * 8 + index * .7);
-                    actor.mesh.userData.arms[0].rotation.x = step * .72;
-                    actor.mesh.userData.arms[1].rotation.x = -step * .72;
-                    actor.mesh.userData.legs[0].rotation.x = -step * .72;
-                    actor.mesh.userData.legs[1].rotation.x = step * .72;
-                    actor.mesh.position.y = Math.abs(step) * .035;
+                    const stride = moving ? step : 0;
+                    actor.mesh.userData.arms[0].rotation.x = stride * .72;
+                    actor.mesh.userData.arms[1].rotation.x = -stride * .72;
+                    actor.mesh.userData.legs[0].rotation.x = -stride * .72;
+                    actor.mesh.userData.legs[1].rotation.x = stride * .72;
+                    actor.mesh.position.y = moving ? Math.abs(step) * .035 : 0;
                 });
                 movingForklifts.forEach((actor, index) => {
-                    placeActivityActor(actor, dt);
-                    actor.mesh.userData.wheels.forEach(w => w.rotation.x -= dt * 5);
-                    actor.mesh.userData.carrier.position.y = .62 + Math.sin(activityTime * .8 + index) * .11;
+                    const moving = placeActivityActor(actor, dt);
+                    if (moving) actor.mesh.userData.wheels.forEach(w => w.rotation.x -= dt * 5);
+                    const carrierTarget = actor.carrying ? 1.15 : .62;
+                    actor.mesh.userData.carrier.position.y +=
+                        (carrierTarget - actor.mesh.userData.carrier.position.y) * Math.min(1, dt * 2.5);
                     actor.mesh.userData.beacon.material.emissiveIntensity = 1.1 + Math.sin(activityTime * 8 + index) * .8;
                 });
                 movingVehicles.forEach(actor => {
-                    placeActivityActor(actor, dt);
-                    actor.mesh.userData.wheels.forEach(wheel => {
+                    const moving = placeActivityActor(actor, dt);
+                    if (moving) actor.mesh.userData.wheels.forEach(wheel => {
                         wheel.rotation.x -= dt * actor.wheelSpeed;
                     });
                 });
+                updateDeliveryRun(dt);
+                updateEntranceTrafficControl(dt);
+            }
+
+            // Deterministic stepping hook for the integration harness and any future QA.
+            function stepActivity(seconds) {
+                updateActivity(seconds);
             }
 
             // ------------------------------------------------------------
@@ -4022,6 +4669,9 @@ import * as THREE from 'three';
             const editorScales = ['x','y','z'].map(axis => document.getElementById(`editor-s${axis}`));
             const editorName = document.getElementById('editor-name');
             const editorAngle = document.getElementById('editor-angle');
+            const editorBend = document.getElementById('editor-bend');
+            const editorBendAxis = document.getElementById('editor-bend-axis');
+            const editorBendReset = document.getElementById('editor-bend-reset');
             const editorFront = document.getElementById('editor-front');
             const editorBack = document.getElementById('editor-back');
             const editorMarquee = document.createElement('div');
@@ -4061,6 +4711,7 @@ import * as THREE from 'three';
                     ...siteNightLights,
                     streetLightGroup,
                     ...movingVehicles.map(actor => actor.mesh),
+                    deliveryRun.mesh,
                     rainField
                 ]);
                 const runtimeObjects = new Set([
@@ -4156,7 +4807,23 @@ import * as THREE from 'three';
                 registerEditable(group, { id: `building-${item.id}`, type: 'sceneObject', label: item.name });
             }
             applyStoredWallCuts();
+            // Photo details are created after the baseline scenery so the automatic
+            // mesh numbering of the locked layout records never shifts.
+            addDieSetFacade();
             registerEverySceneObject();
+            const additiveGrassGround = new THREE.Group();
+            additiveGrassGround.name = 'Additive landscape grass ground';
+            const additiveGrassMesh = box(additiveGrassGround, 260, .35, 320,
+                0, -.775, 30, grassMat, false);
+            additiveGrassMesh.name = 'Landscape grass surface';
+            scene.add(additiveGrassGround);
+            registerEditable(additiveGrassGround, {
+                id: 'landscape-grass-ground-v1',
+                type: 'landscapeGrass',
+                label: 'พื้นหญ้ารอบโรงงาน',
+                builtin: false,
+                collidable: false
+            });
             registerEditable(createEntranceMonument(), {
                 id: 'entrance-tdk-monument-v1',
                 type: 'entranceMonument',
@@ -4170,6 +4837,13 @@ import * as THREE from 'three';
                 label: 'ภูมิทัศน์ถนนทางเข้าโรงงาน',
                 builtin: false,
                 collidable: false
+            });
+            registerEditable(createEntranceBoundaryWall(), {
+                id: 'entrance-boundary-wall-v1',
+                type: 'entranceBoundaryWall',
+                label: 'กำแพงทางเข้าโรงงาน · 2 ช่องทางเข้า',
+                builtin: false,
+                collidable: true
             });
             selectionPivot.name = 'Editor multi-selection pivot';
             selectionHighlightGroup.name = 'Editor selection highlights';
@@ -4257,9 +4931,13 @@ import * as THREE from 'three';
                             })
                         );
                         mesh.position.y = height / 2;
+                        const bend = { ...(group.userData.editor.bend || { angle: 0, axis: 'x' }) };
+                        restoreEditorBendGeometry(group);
                         clearExternalAssetPlaceholder(group);
                         group.add(mesh);
                         registerExternalAssetMeshes(group, asset);
+                        if (Math.abs(bend.angle) >= .001) applyEditorBend(group, bend.angle, bend.axis);
+                        updateEditableBounds(group);
                         editorStatus.textContent = `โหลดรูปภาพ “${asset.name}” แล้ว`;
                     }, undefined, error => showExternalAssetError(group, asset, error));
                     return;
@@ -4287,9 +4965,13 @@ import * as THREE from 'three';
                     model.position.x -= center.x;
                     model.position.y -= fittedBox.min.y;
                     model.position.z -= center.z;
+                    const bend = { ...(group.userData.editor.bend || { angle: 0, axis: 'x' }) };
+                    restoreEditorBendGeometry(group);
                     clearExternalAssetPlaceholder(group);
                     group.add(model);
                     registerExternalAssetMeshes(group, asset);
+                    if (Math.abs(bend.angle) >= .001) applyEditorBend(group, bend.angle, bend.axis);
+                    updateEditableBounds(group);
                     editorStatus.textContent = `โหลดโมเดล “${asset.name}” จาก CDN/URL แล้ว`;
                 }, undefined, error => showExternalAssetError(group, asset, error));
             }
@@ -4359,7 +5041,7 @@ import * as THREE from 'three';
                 const worldScale = new THREE.Vector3();
                 group.matrixWorld.decompose(worldPosition, worldQuaternion, worldScale);
                 const worldRotation = new THREE.Euler().setFromQuaternion(worldQuaternion, 'XYZ');
-                return {
+                const serialized = {
                     type: group.userData.editor.type,
                     label: group.userData.editor.label,
                     position: { x: worldPosition.x, y: worldPosition.y, z: worldPosition.z },
@@ -4367,6 +5049,11 @@ import * as THREE from 'three';
                     scale: { x: worldScale.x, y: worldScale.y, z: worldScale.z },
                     renderMode: group.userData.editor.renderMode || 'back'
                 };
+                const bend = group.userData.editor.bend;
+                if (Math.abs(bend?.angle || 0) >= .001) {
+                    serialized.bend = { angle: bend.angle, axis: bend.axis };
+                }
+                return serialized;
             }
 
             function captureEditorLayoutState() {
@@ -4431,6 +5118,10 @@ import * as THREE from 'three';
                     input.disabled = !target;
                     if (!target) input.value = '';
                 });
+                const bendTarget = count === 1 ? selectedEditable : null;
+                editorBend.disabled = editorBendAxis.disabled = editorBendReset.disabled = !bendTarget;
+                editorBend.value = bendTarget ? String(bendTarget.userData.editor.bend?.angle || 0) : '';
+                editorBendAxis.value = bendTarget?.userData.editor.bend?.axis || 'x';
                 editorName.disabled = count !== 1;
                 editorName.value = count === 1 ? selectedEditable.userData.editor.label : '';
                 for (const id of ['duplicate','delete','shrink','grow','focus']) document.getElementById(`editor-${id}`).disabled = !target;
@@ -4747,7 +5438,8 @@ import * as THREE from 'three';
             function captureEditorState() {
                 return { entries: [...editableObjects.values()].map(group => ({ group,
                     transform: captureEditableTransforms([group])[0], label: group.userData.editor.label,
-                    renderMode: group.userData.editor.renderMode || 'back' })),
+                    renderMode: group.userData.editor.renderMode || 'back',
+                    bend: { ...(group.userData.editor.bend || { angle: 0, axis: 'x' }) } })),
                     selected: [...selectedEditables], deleted: [...deletedBuiltinObjects],
                     cuts: [...storedEditorLayout.cuts] };
             }
@@ -4759,9 +5451,11 @@ import * as THREE from 'three';
                 state.deleted.forEach(id => deletedBuiltinObjects.add(id));
                 storedEditorLayout.cuts = [...state.cuts];
                 restoreRemovedEditables(state.entries.map(({group}) => ({group, parent: scene})));
-                state.entries.forEach(({group, label, renderMode}) => {
+                state.entries.forEach(({group, label, renderMode, bend}) => {
                     group.userData.editor.label = group.name = label;
                     setEditorRenderMode(group, renderMode);
+                    applyEditorBend(group, bend?.angle || 0, bend?.axis || 'x');
+                    updateEditableBounds(group);
                 });
                 restoreEditableTransforms(state.entries.map(entry => entry.transform));
                 selectedEditables.clear();
@@ -4882,6 +5576,10 @@ import * as THREE from 'three';
                     copy.userData.editor.label = `${source.userData.editor.label} (สำเนา)`;
                     copy.rotation.copy(source.rotation);
                     copy.scale.copy(source.scale);
+                    const sourceBend = source.userData.editor.bend;
+                    if (Math.abs(sourceBend?.angle || 0) >= .001) {
+                        applyEditorBend(copy, sourceBend.angle, sourceBend.axis);
+                    }
                     setEditorRenderMode(copy, renderMode);
                     updateEditableBounds(copy);
                     selectedEditables.add(copy);
@@ -5040,18 +5738,49 @@ import * as THREE from 'three';
                 });
             });
 
+            function changeSelectedBend(angle, axis) {
+                if (selectedEditables.size !== 1 || !selectedEditable) return;
+                const group = selectedEditable;
+                const before = { ...(group.userData.editor.bend || { angle: 0, axis: 'x' }) };
+                const nextAngle = THREE.MathUtils.clamp(Number(angle) || 0, -180, 180);
+                const nextAxis = ['x', 'y', 'z'].includes(axis) ? axis : 'x';
+                if (before.angle === nextAngle && before.axis === nextAxis) return;
+                if (!applyEditorBend(group, nextAngle, nextAxis)) {
+                    editorStatus.textContent = 'วัตถุนี้ไม่มี mesh ที่รองรับการดัดโค้ง';
+                    updateEditorFields();
+                    return;
+                }
+                updateEditableBounds(group);
+                updateSelectionHighlights();
+                updateEditorFields();
+                pushEditorUndo('Bend / curve object', () => {
+                    applyEditorBend(group, before.angle, before.axis);
+                    updateEditableBounds(group);
+                    updateSelectionHighlights();
+                    updateEditorFields();
+                });
+                saveEditorLayout(`ดัดวัตถุ ${nextAngle.toFixed(0)}° ตามแกน ${nextAxis.toUpperCase()} แล้ว`);
+            }
+
+            editorBend.addEventListener('change', () => changeSelectedBend(editorBend.value, editorBendAxis.value));
+            editorBendAxis.addEventListener('change', () => changeSelectedBend(editorBend.value, editorBendAxis.value));
+            editorBendReset.addEventListener('click', () => changeSelectedBend(0, editorBendAxis.value));
+
             // Workspace extension
             function cloneEditorGroup(source) {
                 // Three's clone serializes userData. editRoot is intentionally a cyclic runtime reference.
                 const metadata = [];
                 const sourceWasFront = source.userData.editor?.renderMode === 'front';
+                const bendState = editorBendStates.get(source);
                 source.traverse(object => {
                     metadata.push([object, object.userData]);
                     object.userData = object.userData.info ? { info: { ...object.userData.info } } : {};
                 });
                 if (sourceWasFront) setEditorRenderMode(source, 'back');
+                bendState?.meshes.forEach(({ object, originalGeometry }) => object.geometry = originalGeometry);
                 try { return source.clone(true); }
                 finally {
+                    bendState?.meshes.forEach(({ object, deformedGeometry }) => object.geometry = deformedGeometry);
                     metadata.forEach(([object, data]) => object.userData = data);
                     if (sourceWasFront) setEditorRenderMode(source, 'front');
                 }
@@ -5159,7 +5888,7 @@ import * as THREE from 'three';
             document.getElementById('editor-undo').addEventListener('click', undoEditorChange);
             document.getElementById('editor-redo').addEventListener('click', redoEditorChange);
             document.getElementById('editor-done').addEventListener('click', () => setEditorMode(false));
-            if (!viewerOnly && startupParams.get('editor') === '1') setEditorMode(true);
+            if (!viewerOnly && window.TDK_START_IN_EDITOR === true) setEditorMode(true);
             document.getElementById('editor-panels').addEventListener('click', event => {
                 const collapsed = document.body.classList.toggle('panels-collapsed');
                 event.currentTarget.textContent = collapsed ? 'แสดงแผง' : 'ซ่อนแผง';
@@ -6407,6 +7136,11 @@ import * as THREE from 'three';
                     position: [8, 120, 170],
                     target: [25, 2, 10],
                     fov: 46
+                },
+                {
+                    position: [117, 85, 142],
+                    target: [34, 0, 31],
+                    fov: 42
                 }
             ];
             let cameraCalibration = {
